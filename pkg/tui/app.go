@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"sshtunnels/pkg/backup"
+	"sshtunnels/pkg/monitoring"
 	"sshtunnels/pkg/sshconfig"
 	"sshtunnels/pkg/tunnel"
 )
@@ -34,10 +35,15 @@ const (
 	ModalViewLogs
 	ModalExport
 	ModalImport
+	ModalMonitor
 )
 
 type tickMsg time.Time
 type sshExitedMsg struct{ err error }
+type monitorMetricsMsg struct {
+	Metrics *monitoring.ServerMetrics
+	Err     error
+}
 
 type hostCheckResultMsg struct {
 	Key       string
@@ -67,9 +73,10 @@ type AppModel struct {
 	TunnelModal *TunnelModal
 	HostModal   *HostModal
 	RenameModal *RenameModal
-	LogModal    *LogModal
-	ExportModal *ExportModal
-	ImportModal *ImportModal
+	LogModal     *LogModal
+	ExportModal  *ExportModal
+	ImportModal  *ImportModal
+	MonitorModal *MonitorModal
 
 	// Mouse Zones & State
 	TabZones    []ButtonZone
@@ -128,7 +135,7 @@ func (a *AppModel) notify(msg string, isError bool) {
 }
 
 func (a *AppModel) checkAllHostsCmd() tea.Cmd {
-	hosts := a.HostsView.Hosts
+	hosts := a.HostsView.Filtered
 	if len(hosts) == 0 {
 		return nil
 	}
@@ -173,10 +180,29 @@ func (a *AppModel) checkAllHostsCmd() tea.Cmd {
 	}
 }
 
+func fetchMetricsCmd(target string) tea.Cmd {
+	return func() tea.Msg {
+		metrics, err := monitoring.FetchMetrics(target, 8*time.Second)
+		return monitorMetricsMsg{Metrics: metrics, Err: err}
+	}
+}
+
 func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case monitorMetricsMsg:
+		if a.MonitorModal != nil {
+			a.MonitorModal.Loading = false
+			if msg.Err != nil {
+				a.MonitorModal.ErrMessage = msg.Err.Error()
+			} else {
+				a.MonitorModal.Metrics = msg.Metrics
+				a.MonitorModal.ErrMessage = ""
+			}
+		}
+		return a, nil
+
 	case tea.WindowSizeMsg:
 		a.Width = msg.Width
 		a.Height = msg.Height
@@ -396,6 +422,17 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				a.ImportModal = nil
 			}
 			return a, nil
+
+		case ModalMonitor:
+			action, closed := a.MonitorModal.HandleMouse(msg, a.Width, a.Height)
+			if closed {
+				a.ActiveModal = ModalNone
+				a.MonitorModal = nil
+			} else if action == "refresh" && a.MonitorModal != nil {
+				a.MonitorModal.Loading = true
+				return a, fetchMetricsCmd(a.MonitorModal.Alias)
+			}
+			return a, nil
 		}
 		return a, nil
 	}
@@ -479,6 +516,35 @@ func (a *AppModel) executeFooterAction(action string) (tea.Model, tea.Cmd) {
 				return sshExitedMsg{err: err}
 			})
 		}
+	case "metrics":
+		selected := a.HostsView.SelectedHost()
+		if selected != nil {
+			target := selected.PrimaryAlias()
+			a.MonitorModal = NewMonitorModal(selected.DisplayName(), target)
+			a.ActiveModal = ModalMonitor
+			return a, fetchMetricsCmd(target)
+		}
+	case "toggle_archive":
+		selected := a.HostsView.SelectedHost()
+		if selected != nil {
+			key := selected.PrimaryAlias()
+			nowArchived := a.MetaStore.ToggleArchived(key)
+			if nowArchived {
+				a.notify(fmt.Sprintf("Сервер '%s' перемещен в отстойник", selected.DisplayName()), false)
+			} else {
+				a.notify(fmt.Sprintf("Сервер '%s' восстановлен из отстойника", selected.DisplayName()), false)
+			}
+			a.HostsView.ApplyFilter()
+		}
+	case "cycle_archive_filter":
+		a.HostsView.CycleFilterMode()
+		modeName := "🟢 Активные"
+		if a.HostsView.FilterMode == FilterArchivedOnly {
+			modeName = "📦 Отстойник"
+		} else if a.HostsView.FilterMode == FilterAll {
+			modeName = "📋 Все серверы"
+		}
+		a.notify(fmt.Sprintf("Режим отображения: %s", modeName), false)
 	case "check_all":
 		a.notify("Проверка доступности серверов...", false)
 		return a, a.checkAllHostsCmd()
@@ -620,6 +686,37 @@ func (a *AppModel) handleHostsTab(msg tea.Msg) tea.Cmd {
 		case "p", "c":
 			a.notify("Проверка доступности серверов...", false)
 			return a.checkAllHostsCmd()
+		case "m":
+			selected := a.HostsView.SelectedHost()
+			if selected != nil {
+				target := selected.PrimaryAlias()
+				a.MonitorModal = NewMonitorModal(selected.DisplayName(), target)
+				a.ActiveModal = ModalMonitor
+				return fetchMetricsCmd(target)
+			}
+		case "z":
+			selected := a.HostsView.SelectedHost()
+			if selected != nil {
+				key := selected.PrimaryAlias()
+				nowArchived := a.MetaStore.ToggleArchived(key)
+				if nowArchived {
+					a.notify(fmt.Sprintf("Сервер '%s' перемещен в отстойник", selected.DisplayName()), false)
+				} else {
+					a.notify(fmt.Sprintf("Сервер '%s' восстановлен из отстойника", selected.DisplayName()), false)
+				}
+				a.HostsView.ApplyFilter()
+				return nil
+			}
+		case "Z":
+			a.HostsView.CycleFilterMode()
+			modeName := "🟢 Активные"
+			if a.HostsView.FilterMode == FilterArchivedOnly {
+				modeName = "📦 Отстойник"
+			} else if a.HostsView.FilterMode == FilterAll {
+				modeName = "📋 Все серверы"
+			}
+			a.notify(fmt.Sprintf("Режим отображения: %s", modeName), false)
+			return nil
 		case "n":
 			selected := a.HostsView.SelectedHost()
 			if selected != nil {
@@ -860,6 +957,22 @@ func (a *AppModel) handleModalKey(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.ImportModal = nil
 		}
 		return a, cmd
+
+	case ModalMonitor:
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			switch keyMsg.String() {
+			case "esc", "q", "enter":
+				a.ActiveModal = ModalNone
+				a.MonitorModal = nil
+				return a, nil
+			case "r":
+				if a.MonitorModal != nil {
+					a.MonitorModal.Loading = true
+					return a, fetchMetricsCmd(a.MonitorModal.Alias)
+				}
+			}
+		}
+		return a, nil
 	}
 
 	return a, nil
@@ -971,15 +1084,21 @@ func (a *AppModel) View() string {
 	var btns []FooterBtn
 	switch a.ActiveTab {
 	case TabHosts:
+		archiveLabel := "Отстойник"
+		sel := a.HostsView.SelectedHost()
+		if sel != nil && a.MetaStore.IsArchived(sel.PrimaryAlias()) {
+			archiveLabel = "Восстановить"
+		}
 		btns = []FooterBtn{
-			{Key: "Enter", Label: "Подключиться", Action: "connect"},
-			{Key: "p", Label: "Проверить все", Action: "check_all"},
+			{Key: "Enter", Label: "Войти", Action: "connect"},
+			{Key: "m", Label: "Метрики", Action: "metrics"},
+			{Key: "p", Label: "Проверить", Action: "check_all"},
+			{Key: "z", Label: archiveLabel, Action: "toggle_archive"},
+			{Key: "Z", Label: "Фильтр", Action: "cycle_archive_filter"},
 			{Key: "n", Label: "Псевдоним", Action: "rename"},
 			{Key: "a", Label: "Добавить", Action: "add_host"},
 			{Key: "t", Label: "Тоннель", Action: "tunnel_host"},
 			{Key: "b", Label: "В фон", Action: "detach"},
-			{Key: "/", Label: "Поиск", Action: "search"},
-			{Key: "Tab", Label: "Вкладка", Action: "switch_tab"},
 			{Key: "q", Label: "Выход", Action: "quit"},
 		}
 	case TabTunnels:
@@ -1025,6 +1144,8 @@ func (a *AppModel) View() string {
 			modalView = a.ExportModal.View()
 		case ModalImport:
 			modalView = a.ImportModal.View()
+		case ModalMonitor:
+			modalView = a.MonitorModal.View()
 		}
 
 		return placeOverlay(modalView, mainView, width, height)

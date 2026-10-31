@@ -10,10 +10,19 @@ import (
 	"sshtunnels/pkg/sshconfig"
 )
 
+type HostFilterMode int
+
+const (
+	FilterActiveOnly HostFilterMode = iota // Активные (по умолчанию)
+	FilterArchivedOnly                     // Отстойник (нерабочие серверы)
+	FilterAll                              // Все серверы
+)
+
 type HostsView struct {
 	Hosts         []*sshconfig.HostConfig
 	Filtered      []*sshconfig.HostConfig
 	MetaStore     *sshconfig.MetadataStore
+	FilterMode    HostFilterMode
 	SelectedIndex int
 	FilterInput   textinput.Model
 	Filtering     bool
@@ -49,13 +58,31 @@ func (v *HostsView) Reload() error {
 	return nil
 }
 
+func (v *HostsView) CycleFilterMode() {
+	v.FilterMode = (v.FilterMode + 1) % 3
+	v.applyFilter()
+}
+
+func (v *HostsView) ApplyFilter() {
+	v.applyFilter()
+}
+
 func (v *HostsView) applyFilter() {
 	query := strings.ToLower(strings.TrimSpace(v.FilterInput.Value()))
-	if query == "" {
-		v.Filtered = v.Hosts
-	} else {
-		var filtered []*sshconfig.HostConfig
-		for _, h := range v.Hosts {
+	var filtered []*sshconfig.HostConfig
+
+	for _, h := range v.Hosts {
+		key := h.PrimaryAlias()
+		isArchived := v.MetaStore.IsArchived(key)
+
+		if v.FilterMode == FilterActiveOnly && isArchived {
+			continue
+		}
+		if v.FilterMode == FilterArchivedOnly && !isArchived {
+			continue
+		}
+
+		if query != "" {
 			match := false
 			for _, a := range h.Aliases {
 				if strings.Contains(strings.ToLower(a), query) {
@@ -68,12 +95,14 @@ func (v *HostsView) applyFilter() {
 				strings.Contains(strings.ToLower(h.DisplayName()), query) {
 				match = true
 			}
-			if match {
-				filtered = append(filtered, h)
+			if !match {
+				continue
 			}
 		}
-		v.Filtered = filtered
+
+		filtered = append(filtered, h)
 	}
+	v.Filtered = filtered
 
 	if v.SelectedIndex >= len(v.Filtered) {
 		v.SelectedIndex = len(v.Filtered) - 1
@@ -157,6 +186,8 @@ func (v *HostsView) Update(msg tea.Msg) tea.Cmd {
 			if len(v.Filtered) > 0 {
 				v.SelectedIndex = len(v.Filtered) - 1
 			}
+		case "Z":
+			v.CycleFilterMode()
 		case "/":
 			v.Filtering = true
 			v.FilterInput.Focus()
@@ -175,15 +206,36 @@ func (v *HostsView) View(width, height int) string {
 
 	var sb strings.Builder
 
-	v.HeaderOffset = 3
+	v.HeaderOffset = 4
 	if v.Filtering || v.FilterInput.Value() != "" {
-		v.HeaderOffset = 5
+		v.HeaderOffset = 6
 		sb.WriteString(lipgloss.NewStyle().MarginBottom(1).Render(v.FilterInput.View()))
 		sb.WriteString("\n")
 	}
 
+	modeName := "🟢 Активные"
+	if v.FilterMode == FilterArchivedOnly {
+		modeName = "📦 Отстойник"
+	} else if v.FilterMode == FilterAll {
+		modeName = "📋 Все серверы"
+	}
+
+	archivedCount := v.MetaStore.ArchivedCount()
+	activeCount := len(v.Hosts) - archivedCount
+	if activeCount < 0 {
+		activeCount = 0
+	}
+
+	filterBar := fmt.Sprintf("Режим: %s [Z для смены]  •  Активных: %d  •  В отстойнике: %d",
+		lipgloss.NewStyle().Bold(true).Foreground(WarningColor).Render("["+modeName+"]"),
+		activeCount,
+		archivedCount,
+	)
+	sb.WriteString(lipgloss.NewStyle().Foreground(SubtleColor).Render(filterBar))
+	sb.WriteString("\n")
+
 	wPrefix := 2
-	wStatus := 12
+	wStatus := 14
 	wAlias := 24
 	wHost := 20
 	wUser := 15
@@ -209,6 +261,11 @@ func (v *HostsView) View(width, height int) string {
 
 	if len(v.Filtered) == 0 {
 		emptyMsg := "В ~/.ssh/config не найдено хостов. Нажмите [a], чтобы добавить новый хост."
+		if v.FilterMode == FilterArchivedOnly {
+			emptyMsg = "Отстойник пуст. Нажмите [z] на нерабочем сервере, чтобы отправить его в отстойник."
+		} else if v.FilterMode == FilterActiveOnly {
+			emptyMsg = "Все серверы находятся в отстойнике. Нажмите [Z], чтобы переключить режим."
+		}
 		sb.WriteString("\n" + lipgloss.NewStyle().Foreground(TextMuted).PaddingLeft(2).Render(emptyMsg) + "\n")
 		return sb.String()
 	}
@@ -238,16 +295,23 @@ func (v *HostsView) View(width, height int) string {
 
 		// Status Badge
 		statusStr := HostUnknownStyle.Render("○ -")
-		switch meta.Status {
-		case sshconfig.StatusOnline:
-			statusStr = HostOnlineStyle.Render(fmt.Sprintf("● %dms", meta.LatencyMs))
-		case sshconfig.StatusOffline:
-			statusStr = HostOfflineStyle.Render("✖ ОФФЛАЙН")
-		case sshconfig.StatusChecking:
-			statusStr = HostCheckingStyle.Render("◐ ПИНГ...")
+		if meta.Archived {
+			statusStr = lipgloss.NewStyle().Foreground(TextMuted).Bold(true).Render("📦 ОТСТОЙНИК")
+		} else {
+			switch meta.Status {
+			case sshconfig.StatusOnline:
+				statusStr = HostOnlineStyle.Render(fmt.Sprintf("● %dms", meta.LatencyMs))
+			case sshconfig.StatusOffline:
+				statusStr = HostOfflineStyle.Render("✖ ОФФЛАЙН")
+			case sshconfig.StatusChecking:
+				statusStr = HostCheckingStyle.Render("◐ ПИНГ...")
+			}
 		}
 
 		alias := h.DisplayName()
+		if meta.Archived {
+			alias = alias + " [АРХИВ]"
+		}
 		dest := h.HostName
 		if dest == "" {
 			dest = "-"

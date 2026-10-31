@@ -11,11 +11,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"sshtunnels/pkg/backup"
 	"sshtunnels/pkg/sshconfig"
+	"sshtunnels/pkg/tray"
 	"sshtunnels/pkg/tui"
 	"sshtunnels/pkg/tunnel"
 )
 
-const version = "1.1.0"
+const version = "1.2.0"
 
 func truncateString(s string, maxLen int) string {
 	r := []rune(s)
@@ -36,6 +37,7 @@ func main() {
 			fmt.Printf("SSHT — Терминальный менеджер SSH-подключений и тоннелей v%s\n", version)
 			fmt.Println("\nИспользование:")
 			fmt.Println("  ssht               Запуск интерактивного TUI-дашборда")
+			fmt.Println("  ssht tray          Иконка в системном трее Windows (фоновое управление)")
 			fmt.Println("  ssht daemon        Фоновый демон (автозапуск тоннелей и мониторинг)")
 			fmt.Println("  ssht start-all     Запустить все сохраненные тоннели")
 			fmt.Println("  ssht stop-all      Остановить все запущенные тоннели")
@@ -44,6 +46,20 @@ func main() {
 			fmt.Println("  ssht import <файл> Импорт настроек из резервной копии")
 			fmt.Println("  ssht -v, --version Показать версию")
 			fmt.Println("  ssht -h, --help    Показать справку")
+			return
+
+		case "tray":
+			manager, err := tunnel.NewManager()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("SSHT Tray v%s запущен в системном трее Windows.\n", version)
+			errs := manager.StartAutoStart()
+			if len(errs) > 0 {
+				fmt.Printf("Запуск авто-тоннелей завершился с %d ошибками.\n", len(errs))
+			}
+			tray.Run(manager)
 			return
 
 		case "daemon":

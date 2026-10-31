@@ -55,3 +55,36 @@ func TestFormatLastConnected(t *testing.T) {
 		t.Errorf("Expected 'Только что', got %s", FormatLastConnected(&now))
 	}
 }
+
+func TestMetadataArchiving(t *testing.T) {
+	tmpDir := t.TempDir()
+	metaPath := tmpDir + "/metadata.json"
+	store := NewMetadataStoreWithPath(metaPath)
+
+	if store.IsArchived("host1") {
+		t.Errorf("host1 should not be archived initially")
+	}
+
+	store.SetArchived("host1", true, "Сервер выключен")
+	if !store.IsArchived("host1") {
+		t.Errorf("host1 should be archived after SetArchived")
+	}
+	if store.ArchivedCount() != 1 {
+		t.Errorf("Expected 1 archived host, got %d", store.ArchivedCount())
+	}
+
+	// Test persistence
+	store2 := NewMetadataStoreWithPath(metaPath)
+	if !store2.IsArchived("host1") {
+		t.Errorf("host1 should be archived after reload from disk")
+	}
+
+	// Toggle back
+	toggled := store2.ToggleArchived("host1")
+	if toggled || store2.IsArchived("host1") {
+		t.Errorf("host1 should be unarchived after toggle")
+	}
+	if store2.ArchivedCount() != 0 {
+		t.Errorf("Expected 0 archived hosts, got %d", store2.ArchivedCount())
+	}
+}

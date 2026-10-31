@@ -23,10 +23,13 @@ const (
 
 // HostMeta holds persistent and runtime metadata for an SSH host.
 type HostMeta struct {
-	LastConnected *time.Time `json:"last_connected,omitempty"`
-	Status        HostStatus `json:"-"`
-	LatencyMs     int64      `json:"-"`
-	LastError     string     `json:"-"`
+	LastConnected  *time.Time `json:"last_connected,omitempty"`
+	Archived       bool       `json:"archived,omitempty"`
+	ArchivedAt     *time.Time `json:"archived_at,omitempty"`
+	ArchivedReason string     `json:"archived_reason,omitempty"`
+	Status         HostStatus `json:"-"`
+	LatencyMs      int64      `json:"-"`
+	LastError      string     `json:"-"`
 }
 
 // MetadataStore manages persistence of host metadata in ~/.ssh/ssht_metadata.json.
@@ -152,6 +155,79 @@ func (s *MetadataStore) SetAllStatus(status HostStatus) {
 	for _, meta := range s.Data {
 		meta.Status = status
 	}
+}
+
+// IsArchived returns true if the host is in the quarantine / archive.
+func (s *MetadataStore) IsArchived(key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if meta, exists := s.Data[key]; exists {
+		return meta.Archived
+	}
+	return false
+}
+
+// SetArchived marks or unmarks a host as quarantined.
+func (s *MetadataStore) SetArchived(key string, archived bool, reason string) {
+	now := time.Now()
+	s.mu.Lock()
+	meta, exists := s.Data[key]
+	if !exists {
+		meta = &HostMeta{}
+		s.Data[key] = meta
+	}
+	meta.Archived = archived
+	if archived {
+		meta.ArchivedAt = &now
+		meta.ArchivedReason = reason
+	} else {
+		meta.ArchivedAt = nil
+		meta.ArchivedReason = ""
+	}
+	s.mu.Unlock()
+
+	_ = s.Save()
+}
+
+// ToggleArchived switches between archived and active state.
+func (s *MetadataStore) ToggleArchived(key string) bool {
+	s.mu.Lock()
+	meta, exists := s.Data[key]
+	if !exists {
+		meta = &HostMeta{}
+		s.Data[key] = meta
+	}
+	meta.Archived = !meta.Archived
+	now := time.Now()
+	if meta.Archived {
+		meta.ArchivedAt = &now
+		if meta.ArchivedReason == "" {
+			meta.ArchivedReason = "Перемещен пользователем"
+		}
+	} else {
+		meta.ArchivedAt = nil
+		meta.ArchivedReason = ""
+	}
+	newStatus := meta.Archived
+	s.mu.Unlock()
+
+	_ = s.Save()
+	return newStatus
+}
+
+// ArchivedCount returns the count of hosts in the quarantine.
+func (s *MetadataStore) ArchivedCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+	for _, meta := range s.Data {
+		if meta.Archived {
+			count++
+		}
+	}
+	return count
 }
 
 // FormatLastConnected produces a readable string for the last connection time.

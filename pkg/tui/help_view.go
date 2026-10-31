@@ -140,7 +140,10 @@ func buildHelpContent(width int) string {
 	// Section 3: SSH Connections
 	add(sectionStyle.Render("══ 3. ДЕЙСТВИЯ: SSH ПОДКЛЮЧЕНИЯ ══════════════════════════════════════════"))
 	add("  " + keyStyle.Render("[Enter]           ") + descStyle.Render("Подключиться к серверу (интерактивная SSH-сессия)"))
-	add("  " + keyStyle.Render("[p] или [c]       ") + descStyle.Render("Проверить доступность (Ping) ВСЕХ серверов параллельно"))
+	add("  " + keyStyle.Render("[m]               ") + descStyle.Render("Мини-мониторинг сервера: CPU, ОЗУ, Диск, Uptime и Load Average"))
+	add("  " + keyStyle.Render("[p] или [c]       ") + descStyle.Render("Проверить доступность (Ping) серверов параллельно"))
+	add("  " + keyStyle.Render("[z]               ") + descStyle.Render("Отправить в «Отстойник» / Восстановить выбранный сервер"))
+	add("  " + keyStyle.Render("[Z]               ") + descStyle.Render("Сменить фильтр списка: [Активные] / [Отстойник] / [Все]"))
 	add("  " + keyStyle.Render("[n]               ") + descStyle.Render("Переименовать хост (задать удобный псевдоним в ~/.ssh/config)"))
 	add("  " + keyStyle.Render("[a]               ") + descStyle.Render("Добавить новый SSH хост в ~/.ssh/config"))
 	add("  " + keyStyle.Render("[t]               ") + descStyle.Render("Быстро создать тоннель для выбранного сервера"))
@@ -188,6 +191,7 @@ func buildHelpContent(width int) string {
 	// Section 7: Background & CLI
 	add(sectionStyle.Render("══ 7. ФОНОВАЯ РАБОТА И CLI КОМАНДЫ ════════════════════════════════════════"))
 	add("  " + keyStyle.Render("ssht              ") + descStyle.Render("Запуск полноэкранного интерактивного TUI"))
+	add("  " + keyStyle.Render("ssht tray         ") + descStyle.Render("Иконка в системном трее Windows с меню и авто-мониторингом"))
 	add("  " + keyStyle.Render("ssht daemon       ") + descStyle.Render("Фоновый сторож: автозапуск тоннелей и авто-переподключение"))
 	add("  " + keyStyle.Render("ssht start-all    ") + descStyle.Render("Запустить все сохраненные тоннели из командной строки"))
 	add("  " + keyStyle.Render("ssht stop-all     ") + descStyle.Render("Остановить все запущенные SSH-тоннели"))
