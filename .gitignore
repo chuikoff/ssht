@@ -1,0 +1,21 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Backups & Temp files
+*.bak
+*.tmp
+*.log
+ssht_backup_*.json
+temp_*.json
+
+# OS specific
+Thumbs.db
+.DS_Store
