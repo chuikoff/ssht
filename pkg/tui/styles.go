@@ -66,6 +66,10 @@ var (
 				Foreground(WarningColor).
 				SetString("◐ ЗАПУСК...")
 
+	StatusReconnectingStyle = lipgloss.NewStyle().
+				Foreground(WarningColor).
+				SetString("↻ ПЕРЕПОДКЛ...")
+
 	StatusFailedStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(ErrorColor).

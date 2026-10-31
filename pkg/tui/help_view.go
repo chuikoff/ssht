@@ -124,6 +124,7 @@ func buildHelpContent(width int) string {
 	add("  " + keyStyle.Render("[/]               ") + descStyle.Render("Мгновенный поиск / фильтрация"))
 	add("  " + keyStyle.Render("[x]               ") + descStyle.Render("Экспорт настроек в файл резервной копии"))
 	add("  " + keyStyle.Render("[i]               ") + descStyle.Render("Импорт / восстановление настроек из файла"))
+	add("  " + keyStyle.Render("[b]               ") + descStyle.Render("Выход в фон (оставить тоннели работать)"))
 	add("  " + keyStyle.Render("[q] / [Ctrl+C]    ") + descStyle.Render("Выход с корректным завершением активных тоннелей"))
 	add("")
 
@@ -149,7 +150,8 @@ func buildHelpContent(width int) string {
 	// Section 4: SSH Tunnels
 	add(sectionStyle.Render("══ 4. ДЕЙСТВИЯ: SSH ТОННЕЛИ ══════════════════════════════════════════════"))
 	add("  " + keyStyle.Render("[Пробел] / [Enter]") + descStyle.Render("Включить / Выключить тоннель (ON / OFF)"))
-	add("  " + keyStyle.Render("[a]               ") + descStyle.Render("Создать новый SSH тоннель"))
+	add("  " + keyStyle.Render("[o]               ") + descStyle.Render("Открыть порт тоннеля в веб-браузере (http://localhost:порт)"))
+	add("  " + keyStyle.Render("[a]               ") + descStyle.Render("Создать новый SSH тоннель (с поддержкой автоповтора)"))
 	add("  " + keyStyle.Render("[e]               ") + descStyle.Render("Редактировать параметры выбранного тоннеля"))
 	add("  " + keyStyle.Render("[d]               ") + descStyle.Render("Удалить выбранный тоннель"))
 	add("  " + keyStyle.Render("[l]               ") + descStyle.Render("Просмотреть логи процесса / ошибки запуска (stderr)"))
@@ -181,6 +183,16 @@ func buildHelpContent(width int) string {
 	add("  " + exampleStyle.Render("• SSH хосты:     ") + descStyle.Render("~/.ssh/config (стандартный файл конфигурации OpenSSH)"))
 	add("  " + exampleStyle.Render("• SSH тоннели:   ") + descStyle.Render("~/.ssh/ssht_tunnels.json (список правил и автозапуск)"))
 	add("  " + exampleStyle.Render("• Метаданные:    ") + descStyle.Render("~/.ssh/ssht_metadata.json (история входов и статус)"))
+	add("")
+
+	// Section 7: Background & CLI
+	add(sectionStyle.Render("══ 7. ФОНОВАЯ РАБОТА И CLI КОМАНДЫ ════════════════════════════════════════"))
+	add("  " + keyStyle.Render("ssht              ") + descStyle.Render("Запуск полноэкранного интерактивного TUI"))
+	add("  " + keyStyle.Render("ssht daemon       ") + descStyle.Render("Фоновый сторож: автозапуск тоннелей и авто-переподключение"))
+	add("  " + keyStyle.Render("ssht start-all    ") + descStyle.Render("Запустить все сохраненные тоннели из командной строки"))
+	add("  " + keyStyle.Render("ssht stop-all     ") + descStyle.Render("Остановить все запущенные SSH-тоннели"))
+	add("  " + keyStyle.Render("ssht status       ") + descStyle.Render("Вывести статус и PID активных тоннелей в консоль"))
+	add("  " + exampleStyle.Render("• Автоповтор:    ") + descStyle.Render("При разрыве сети тоннель автоматически переподключается"))
 
 	// Join lines with explicit CRLF so terminal in raw mode never drifts
 	return strings.Join(lines, "\r\n")

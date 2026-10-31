@@ -80,9 +80,10 @@ type AppModel struct {
 	Notification string
 	IsErrorNotif bool
 
-	Width  int
-	Height int
-	Ready  bool
+	Width    int
+	Height   int
+	Ready    bool
+	Detached bool
 }
 
 func NewAppModel(m *tunnel.Manager, meta *sshconfig.MetadataStore) *AppModel {
@@ -224,6 +225,10 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c", "q":
 				a.Manager.StopAll()
+				return a, tea.Quit
+
+			case "b":
+				a.Detached = true
 				return a, tea.Quit
 
 			case "tab":
@@ -556,6 +561,30 @@ func (a *AppModel) executeFooterAction(action string) (tea.Model, tea.Cmd) {
 		a.Manager.StopAll()
 		a.notify("Все тоннели остановлены", false)
 		a.TunnelsView.ApplyFilter()
+	case "open_browser":
+		selected := a.TunnelsView.SelectedTunnel()
+		if selected != nil {
+			url := selected.BrowserURL()
+			if url == "" {
+				a.notify("Удаленные тоннели (-R) открываются на стороне сервера", true)
+			} else {
+				if selected.Status != tunnel.StatusActive {
+					if err := a.Manager.StartTunnel(selected.ID); err != nil {
+						a.notify(fmt.Sprintf("Не удалось запустить тоннель: %v", err), true)
+						return a, nil
+					}
+					a.TunnelsView.ApplyFilter()
+				}
+				if err := tunnel.OpenBrowser(url); err != nil {
+					a.notify(fmt.Sprintf("Ошибка браузера: %v", err), true)
+				} else {
+					a.notify(fmt.Sprintf("Открыто в браузере: %s", url), false)
+				}
+			}
+		}
+	case "detach":
+		a.Detached = true
+		return a, tea.Quit
 	case "export":
 		a.ExportModal = NewExportModal()
 		a.ActiveModal = ModalExport
@@ -694,6 +723,29 @@ func (a *AppModel) handleTunnelsTab(msg tea.Msg) tea.Cmd {
 				logs := a.Manager.GetLog(selected.ID)
 				a.LogModal = NewLogModal(selected, logs, a.Width, a.Height)
 				a.ActiveModal = ModalViewLogs
+			}
+			return nil
+
+		case "o":
+			selected := a.TunnelsView.SelectedTunnel()
+			if selected != nil {
+				url := selected.BrowserURL()
+				if url == "" {
+					a.notify("Удаленные тоннели (-R) открываются на стороне сервера", true)
+				} else {
+					if selected.Status != tunnel.StatusActive {
+						if err := a.Manager.StartTunnel(selected.ID); err != nil {
+							a.notify(fmt.Sprintf("Не удалось запустить тоннель: %v", err), true)
+							return nil
+						}
+						a.TunnelsView.ApplyFilter()
+					}
+					if err := tunnel.OpenBrowser(url); err != nil {
+						a.notify(fmt.Sprintf("Ошибка браузера: %v", err), true)
+					} else {
+						a.notify(fmt.Sprintf("Открыто в браузере: %s", url), false)
+					}
+				}
 			}
 			return nil
 		}
@@ -925,8 +977,7 @@ func (a *AppModel) View() string {
 			{Key: "n", Label: "Псевдоним", Action: "rename"},
 			{Key: "a", Label: "Добавить", Action: "add_host"},
 			{Key: "t", Label: "Тоннель", Action: "tunnel_host"},
-			{Key: "x", Label: "Экспорт", Action: "export"},
-			{Key: "i", Label: "Импорт", Action: "import"},
+			{Key: "b", Label: "В фон", Action: "detach"},
 			{Key: "/", Label: "Поиск", Action: "search"},
 			{Key: "Tab", Label: "Вкладка", Action: "switch_tab"},
 			{Key: "q", Label: "Выход", Action: "quit"},
@@ -934,22 +985,22 @@ func (a *AppModel) View() string {
 	case TabTunnels:
 		btns = []FooterBtn{
 			{Key: "Space", Label: "Вкл/Выкл", Action: "toggle"},
+			{Key: "o", Label: "Браузер", Action: "open_browser"},
 			{Key: "a", Label: "Добавить", Action: "add_tunnel"},
 			{Key: "e", Label: "Изменить", Action: "edit"},
 			{Key: "d", Label: "Удалить", Action: "delete"},
 			{Key: "l", Label: "Логи", Action: "logs"},
 			{Key: "s", Label: "Стоп все", Action: "stop_all"},
-			{Key: "x", Label: "Экспорт", Action: "export"},
-			{Key: "i", Label: "Импорт", Action: "import"},
+			{Key: "b", Label: "В фон", Action: "detach"},
 			{Key: "Tab", Label: "Вкладка", Action: "switch_tab"},
 			{Key: "q", Label: "Выход", Action: "quit"},
 		}
 	case TabHelp:
 		btns = []FooterBtn{
-			{Key: "x", Label: "Экспорт настроек", Action: "export"},
-			{Key: "i", Label: "Импорт настроек", Action: "import"},
+			{Key: "x", Label: "Экспорт", Action: "export"},
+			{Key: "i", Label: "Импорт", Action: "import"},
+			{Key: "b", Label: "В фон", Action: "detach"},
 			{Key: "Tab", Label: "Сменить вкладку", Action: "switch_tab"},
-			{Key: "1/2/3", Label: "Перейти", Action: "switch_tab"},
 			{Key: "q", Label: "Выход", Action: "quit"},
 		}
 	}

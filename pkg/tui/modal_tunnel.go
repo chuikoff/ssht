@@ -26,6 +26,7 @@ type TunnelModal struct {
 	TunnelTypes    []tunnel.TunnelType
 	TypeIndex      int
 	AutoStart      bool
+	AutoReconnect  bool
 	AvailableHosts []string
 	ErrMessage     string
 	Width          int
@@ -41,6 +42,7 @@ const (
 	fieldRemotePort
 	fieldBindAddress
 	fieldAutoStart
+	fieldAutoReconnect
 	fieldTunnelDesc
 	fieldCount
 )
@@ -66,6 +68,7 @@ func NewTunnelModal(mode TunnelModalMode, t *tunnel.Tunnel, hosts []string) *Tun
 	types := []tunnel.TunnelType{tunnel.TypeLocal, tunnel.TypeRemote, tunnel.TypeDynamic}
 	typeIdx := 0
 	autoStart := false
+	autoReconnect := true
 	editingID := ""
 
 	if t != nil {
@@ -82,6 +85,7 @@ func NewTunnelModal(mode TunnelModalMode, t *tunnel.Tunnel, hosts []string) *Tun
 		inputs[fieldBindAddress].SetValue(t.BindAddress)
 		inputs[fieldTunnelDesc].SetValue(t.Description)
 		autoStart = t.AutoStart
+		autoReconnect = t.AutoReconnect
 
 		for i, tt := range types {
 			if tt == t.Type {
@@ -107,6 +111,7 @@ func NewTunnelModal(mode TunnelModalMode, t *tunnel.Tunnel, hosts []string) *Tun
 		TunnelTypes:    types,
 		TypeIndex:      typeIdx,
 		AutoStart:      autoStart,
+		AutoReconnect:  autoReconnect,
 		AvailableHosts: hosts,
 	}
 }
@@ -117,7 +122,7 @@ func (m *TunnelModal) setFocus(idx int) {
 	}
 	m.Inputs[m.FocusIndex].Blur()
 	m.FocusIndex = idx
-	if m.FocusIndex != fieldTunnelType && m.FocusIndex != fieldAutoStart {
+	if m.FocusIndex != fieldTunnelType && m.FocusIndex != fieldAutoStart && m.FocusIndex != fieldAutoReconnect {
 		m.Inputs[m.FocusIndex].Focus()
 	}
 }
@@ -127,7 +132,7 @@ func (m *TunnelModal) HandleMouse(msg tea.MouseMsg, screenWidth, screenHeight in
 		return nil, false
 	}
 
-	modalHeight := 16
+	modalHeight := 18
 	modalWidth := 74
 	topY := (screenHeight - modalHeight) / 2
 	leftX := (screenWidth - modalWidth) / 2
@@ -140,6 +145,10 @@ func (m *TunnelModal) HandleMouse(msg tea.MouseMsg, screenWidth, screenHeight in
 		}
 		if relY == fieldAutoStart {
 			m.AutoStart = !m.AutoStart
+			return nil, false
+		}
+		if relY == fieldAutoReconnect {
+			m.AutoReconnect = !m.AutoReconnect
 			return nil, false
 		}
 		m.setFocus(relY)
@@ -189,6 +198,10 @@ func (m *TunnelModal) Update(msg tea.Msg) (*tunnel.Tunnel, bool, tea.Cmd) {
 				m.AutoStart = !m.AutoStart
 				return nil, false, nil
 			}
+			if m.FocusIndex == fieldAutoReconnect {
+				m.AutoReconnect = !m.AutoReconnect
+				return nil, false, nil
+			}
 		case "right", "l":
 			if m.FocusIndex == fieldTunnelType {
 				if m.TypeIndex < len(m.TunnelTypes)-1 {
@@ -202,6 +215,10 @@ func (m *TunnelModal) Update(msg tea.Msg) (*tunnel.Tunnel, bool, tea.Cmd) {
 				m.AutoStart = !m.AutoStart
 				return nil, false, nil
 			}
+			if m.FocusIndex == fieldAutoReconnect {
+				m.AutoReconnect = !m.AutoReconnect
+				return nil, false, nil
+			}
 		case " ":
 			if m.FocusIndex == fieldTunnelType {
 				m.TypeIndex = (m.TypeIndex + 1) % len(m.TunnelTypes)
@@ -209,6 +226,10 @@ func (m *TunnelModal) Update(msg tea.Msg) (*tunnel.Tunnel, bool, tea.Cmd) {
 			}
 			if m.FocusIndex == fieldAutoStart {
 				m.AutoStart = !m.AutoStart
+				return nil, false, nil
+			}
+			if m.FocusIndex == fieldAutoReconnect {
+				m.AutoReconnect = !m.AutoReconnect
 				return nil, false, nil
 			}
 		case "enter":
@@ -223,7 +244,7 @@ func (m *TunnelModal) Update(msg tea.Msg) (*tunnel.Tunnel, bool, tea.Cmd) {
 
 	var cmds []tea.Cmd
 	for i := range m.Inputs {
-		if i != fieldTunnelType && i != fieldAutoStart {
+		if i != fieldTunnelType && i != fieldAutoStart && i != fieldAutoReconnect {
 			var cmd tea.Cmd
 			m.Inputs[i], cmd = m.Inputs[i].Update(msg)
 			cmds = append(cmds, cmd)
@@ -236,7 +257,7 @@ func (m *TunnelModal) Update(msg tea.Msg) (*tunnel.Tunnel, bool, tea.Cmd) {
 func (m *TunnelModal) nextField() {
 	m.Inputs[m.FocusIndex].Blur()
 	m.FocusIndex = (m.FocusIndex + 1) % fieldCount
-	if m.FocusIndex != fieldTunnelType && m.FocusIndex != fieldAutoStart {
+	if m.FocusIndex != fieldTunnelType && m.FocusIndex != fieldAutoStart && m.FocusIndex != fieldAutoReconnect {
 		m.Inputs[m.FocusIndex].Focus()
 	}
 }
@@ -247,7 +268,7 @@ func (m *TunnelModal) prevField() {
 	if m.FocusIndex < 0 {
 		m.FocusIndex = fieldCount - 1
 	}
-	if m.FocusIndex != fieldTunnelType && m.FocusIndex != fieldAutoStart {
+	if m.FocusIndex != fieldTunnelType && m.FocusIndex != fieldAutoStart && m.FocusIndex != fieldAutoReconnect {
 		m.Inputs[m.FocusIndex].Focus()
 	}
 }
@@ -299,16 +320,17 @@ func (m *TunnelModal) Validate() (*tunnel.Tunnel, error) {
 	}
 
 	return &tunnel.Tunnel{
-		ID:          id,
-		Name:        name,
-		Type:        tunType,
-		Host:        host,
-		BindAddress: bindAddr,
-		LocalPort:   localPort,
-		RemoteHost:  remoteHost,
-		RemotePort:  remotePort,
-		AutoStart:   m.AutoStart,
-		Description: desc,
+		ID:            id,
+		Name:          name,
+		Type:          tunType,
+		Host:          host,
+		BindAddress:   bindAddr,
+		LocalPort:     localPort,
+		RemoteHost:    remoteHost,
+		RemotePort:    remotePort,
+		AutoStart:     m.AutoStart,
+		AutoReconnect: m.AutoReconnect,
+		Description:   desc,
 	}, nil
 }
 
@@ -327,6 +349,7 @@ func (m *TunnelModal) View() string {
 		"Удаленный порт: ",
 		"Адрес привязки: ",
 		"Автозапуск:     ",
+		"Автоповтор:     ",
 		"Описание:       ",
 	}
 
@@ -363,6 +386,17 @@ func (m *TunnelModal) View() string {
 				sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(WarningColor).Render(autoStr))
 			} else {
 				sb.WriteString(lipgloss.NewStyle().Foreground(TextLight).Render(autoStr))
+			}
+		case fieldAutoReconnect:
+			val := "Нет"
+			if m.AutoReconnect {
+				val = "Да"
+			}
+			reconStr := fmt.Sprintf("< %s > (Клик или Пробел для выбора)", val)
+			if isFocused {
+				sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(WarningColor).Render(reconStr))
+			} else {
+				sb.WriteString(lipgloss.NewStyle().Foreground(TextLight).Render(reconStr))
 			}
 		default:
 			sb.WriteString(m.Inputs[i].View())

@@ -25,24 +25,26 @@ const (
 type TunnelStatus string
 
 const (
-	StatusInactive TunnelStatus = "INACTIVE"
-	StatusStarting TunnelStatus = "STARTING"
-	StatusActive   TunnelStatus = "ACTIVE"
-	StatusFailed   TunnelStatus = "FAILED"
+	StatusInactive     TunnelStatus = "INACTIVE"
+	StatusStarting     TunnelStatus = "STARTING"
+	StatusActive       TunnelStatus = "ACTIVE"
+	StatusFailed       TunnelStatus = "FAILED"
+	StatusReconnecting TunnelStatus = "RECONNECTING"
 )
 
 // Tunnel represents an SSH tunnel configuration and state.
 type Tunnel struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Type        TunnelType `json:"type"`        // "local", "remote", "dynamic"
-	Host        string     `json:"host"`        // SSH host alias from ~/.ssh/config or user@ip
-	BindAddress string     `json:"bind_address"`// Optional bind address, default 127.0.0.1
-	LocalPort   int        `json:"local_port"`
-	RemoteHost  string     `json:"remote_host"` // Destination host for local forward (e.g. localhost)
-	RemotePort  int        `json:"remote_port"` // Destination port
-	AutoStart   bool       `json:"auto_start"`  // Start automatically when manager opens
-	Description string     `json:"description"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Type          TunnelType `json:"type"`          // "local", "remote", "dynamic"
+	Host          string     `json:"host"`          // SSH host alias from ~/.ssh/config or user@ip
+	BindAddress   string     `json:"bind_address"`  // Optional bind address, default 127.0.0.1
+	LocalPort     int        `json:"local_port"`
+	RemoteHost    string     `json:"remote_host"`   // Destination host for local forward (e.g. localhost)
+	RemotePort    int        `json:"remote_port"`   // Destination port
+	AutoStart     bool       `json:"auto_start"`    // Start automatically when manager opens
+	AutoReconnect bool       `json:"auto_reconnect"`// Automatically reconnect on connection drop
+	Description   string     `json:"description"`
 
 	// Runtime fields (not persisted)
 	Status    TunnelStatus `json:"-"`
@@ -82,6 +84,19 @@ func (t *Tunnel) Summary() string {
 	default:
 		return fmt.Sprintf("%s:%d", bind, t.LocalPort)
 	}
+}
+
+// BrowserURL returns the web URL to access this tunnel locally in a browser.
+func (t *Tunnel) BrowserURL() string {
+	bind := t.BindAddress
+	if bind == "" || bind == "0.0.0.0" {
+		bind = "127.0.0.1"
+	}
+	proto := "http"
+	if t.RemotePort == 443 || t.LocalPort == 443 {
+		proto = "https"
+	}
+	return fmt.Sprintf("%s://%s:%d", proto, bind, t.LocalPort)
 }
 
 // ForwardFlag returns the ssh argument flag (e.g. "-L", "-R", "-D").

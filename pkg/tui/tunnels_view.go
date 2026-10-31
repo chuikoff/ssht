@@ -220,6 +220,8 @@ func (v *TunnelsView) View(width, height int) string {
 			statusBadge = StatusActiveStyle.Render()
 		case tunnel.StatusStarting:
 			statusBadge = StatusStartingStyle.Render()
+		case tunnel.StatusReconnecting:
+			statusBadge = StatusReconnectingStyle.Render()
 		case tunnel.StatusFailed:
 			statusBadge = StatusFailedStyle.Render()
 		}

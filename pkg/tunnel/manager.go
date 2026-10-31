@@ -24,10 +24,11 @@ type ActiveProcess struct {
 
 // Manager orchestrates tunnel lifecycle and persistence.
 type Manager struct {
-	mu        sync.RWMutex
-	store     *TunnelStore
-	tunnels   []*Tunnel
-	processes map[string]*ActiveProcess // key: tunnel.ID
+	mu          sync.RWMutex
+	store       *TunnelStore
+	tunnels     []*Tunnel
+	processes   map[string]*ActiveProcess // key: tunnel.ID
+	userStopped map[string]bool           // key: tunnel.ID
 }
 
 // NewManager creates a manager and loads existing tunnel configs.
@@ -47,9 +48,10 @@ func NewManagerWithStore(store *TunnelStore) (*Manager, error) {
 	}
 
 	m := &Manager{
-		store:     store,
-		tunnels:   tunnels,
-		processes: make(map[string]*ActiveProcess),
+		store:       store,
+		tunnels:     tunnels,
+		processes:   make(map[string]*ActiveProcess),
+		userStopped: make(map[string]bool),
 	}
 
 	return m, nil
@@ -210,6 +212,7 @@ func (m *Manager) StartTunnel(id string) error {
 
 	t.PID = cmd.Process.Pid
 	t.StartedAt = time.Now()
+	m.userStopped[t.ID] = false
 
 	act := &ActiveProcess{
 		Cmd:       cmd,
@@ -217,7 +220,7 @@ func (m *Manager) StartTunnel(id string) error {
 	}
 	m.processes[t.ID] = act
 
-	// Monitor background exit
+	// Monitor background exit & auto-reconnect
 	go func(tun *Tunnel, proc *ActiveProcess) {
 		err := proc.Cmd.Wait()
 		m.mu.Lock()
@@ -226,6 +229,23 @@ func (m *Manager) StartTunnel(id string) error {
 		if m.processes[tun.ID] == proc {
 			delete(m.processes, tun.ID)
 			tun.PID = 0
+			stoppedByUser := m.userStopped[tun.ID]
+
+			if !stoppedByUser && tun.AutoReconnect {
+				tun.Status = StatusReconnecting
+				tun.LastError = "Соединение разорвано. Переподключение через 4 сек..."
+				go func(id string) {
+					time.Sleep(4 * time.Second)
+					m.mu.RLock()
+					stopped := m.userStopped[id]
+					m.mu.RUnlock()
+					if !stopped {
+						_ = m.StartTunnel(id)
+					}
+				}(tun.ID)
+				return
+			}
+
 			if err != nil {
 				tun.Status = StatusFailed
 				msg := strings.TrimSpace(proc.StderrBuf.String())
@@ -267,6 +287,8 @@ func (m *Manager) StopTunnel(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.userStopped[id] = true
+
 	var t *Tunnel
 	for _, item := range m.tunnels {
 		if item.ID == id {
@@ -296,6 +318,7 @@ func (m *Manager) StopAll() {
 	defer m.mu.Unlock()
 
 	for id, proc := range m.processes {
+		m.userStopped[id] = true
 		if proc.Cmd != nil && proc.Cmd.Process != nil {
 			killProcess(proc.Cmd.Process.Pid)
 		}
@@ -306,6 +329,30 @@ func (m *Manager) StopAll() {
 		t.Status = StatusInactive
 		t.PID = 0
 	}
+}
+
+// StartAll starts all configured tunnels.
+func (m *Manager) StartAll() []error {
+	var errs []error
+	for _, t := range m.GetTunnels() {
+		if err := m.StartTunnel(t.ID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+// StartAutoStart starts tunnels configured with AutoStart.
+func (m *Manager) StartAutoStart() []error {
+	var errs []error
+	for _, t := range m.GetTunnels() {
+		if t.AutoStart {
+			if err := m.StartTunnel(t.ID); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errs
 }
 
 // ToggleTunnel switches tunnel between active and inactive.
