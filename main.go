@@ -14,9 +14,8 @@ import (
 	"sshtunnels/pkg/tray"
 	"sshtunnels/pkg/tui"
 	"sshtunnels/pkg/tunnel"
+	"sshtunnels/pkg/version"
 )
-
-const version = "1.2.0"
 
 func truncateString(s string, maxLen int) string {
 	r := []rune(s)
@@ -30,11 +29,11 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "-v", "--version":
-			fmt.Printf("SSHT — Терминальный менеджер SSH-подключений и тоннелей v%s\n", version)
+			fmt.Printf("SSHT — Терминальный менеджер SSH-подключений и тоннелей v%s\n", version.Current)
 			return
 
 		case "-h", "--help":
-			fmt.Printf("SSHT — Терминальный менеджер SSH-подключений и тоннелей v%s\n", version)
+			fmt.Printf("SSHT — Терминальный менеджер SSH-подключений и тоннелей v%s\n", version.Current)
 			fmt.Println("\nИспользование:")
 			fmt.Println("  ssht               Запуск интерактивного TUI-дашборда")
 			fmt.Println("  ssht tray          Иконка в системном трее Windows (фоновое управление)")
@@ -54,7 +53,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("SSHT Tray v%s запущен в системном трее Windows.\n", version)
+			fmt.Printf("SSHT Tray v%s запущен в системном трее Windows.\n", version.Current)
 			errs := manager.StartAutoStart()
 			if len(errs) > 0 {
 				fmt.Printf("Запуск авто-тоннелей завершился с %d ошибками.\n", len(errs))
@@ -68,7 +67,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("SSHT Daemon v%s запущен.\n", version)
+			fmt.Printf("SSHT Daemon v%s запущен.\n", version.Current)
 			errs := manager.StartAutoStart()
 			autoCount := 0
 			for _, t := range manager.GetTunnels() {

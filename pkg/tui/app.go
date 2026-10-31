@@ -14,6 +14,7 @@ import (
 	"sshtunnels/pkg/monitoring"
 	"sshtunnels/pkg/sshconfig"
 	"sshtunnels/pkg/tunnel"
+	"sshtunnels/pkg/version"
 )
 
 type TabIndex int
@@ -992,10 +993,12 @@ func (a *AppModel) View() string {
 		height = 15
 	}
 
-	// 1. Header (Title + Active Tunnels Counter + Clickable Tabs)
+	// 1. Header (Title + Version + Active Tunnels Counter + Clickable Tabs)
 	var headerSb strings.Builder
-	headerSb.WriteString(AppTitleStyle.Render(" SSHT "))
-	curX := 8
+	titleText := fmt.Sprintf("SSHT v%s", version.Current)
+	headerSb.WriteString(AppTitleStyle.Render(titleText))
+	headerSb.WriteString(" ")
+	curX := utf8.RuneCountInString(titleText) + 3
 
 	activeCount := a.Manager.ActiveCount()
 	totalCount := len(a.Manager.GetTunnels())
@@ -1006,8 +1009,8 @@ func (a *AppModel) View() string {
 	} else {
 		headerSb.WriteString(InactiveCountBadge.Render(badgeText))
 	}
-	curX += 1 + utf8.RuneCountInString(badgeText) + 2 + 3
 	headerSb.WriteString("   ")
+	curX += utf8.RuneCountInString(badgeText) + 2 + 3
 
 	a.TabZones = []ButtonZone{}
 

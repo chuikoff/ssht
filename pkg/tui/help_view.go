@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"sshtunnels/pkg/version"
 )
 
 type HelpView struct {
@@ -111,7 +112,7 @@ func buildHelpContent(width int) string {
 		lines = append(lines, s)
 	}
 
-	add(titleStyle.Render("📖 СПРАВКА И РУКОВОДСТВО ПОЛЬЗОВАТЕЛЯ SSHT"))
+	add(titleStyle.Render(fmt.Sprintf("📖 СПРАВКА И РУКОВОДСТВО ПОЛЬЗОВАТЕЛЯ SSHT v%s", version.Current)))
 	add("")
 
 	// Section 1: Navigation

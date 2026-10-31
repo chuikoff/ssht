@@ -15,6 +15,7 @@ import (
 
 	"github.com/energye/systray"
 	"sshtunnels/pkg/tunnel"
+	"sshtunnels/pkg/version"
 )
 
 // GenerateTrayIcon dynamically generates a 32x32 Windows ICO byte slice
@@ -88,7 +89,7 @@ func Run(manager *tunnel.Manager) {
 		systray.SetTitle("SSHT")
 		systray.SetTooltip("SSHT: Терминальный менеджер SSH и тоннелей")
 
-		mTitle := systray.AddMenuItem("SSHT — Терминальный менеджер", "SSHT v1.2.0")
+		mTitle := systray.AddMenuItem("SSHT — Терминальный менеджер", fmt.Sprintf("SSHT v%s", version.Current))
 		mTitle.Disable()
 
 		mStatus := systray.AddMenuItem(fmt.Sprintf("Активных тоннелей: %d", manager.ActiveCount()), "Текущее количество активных тоннелей")
