@@ -14,6 +14,7 @@ import (
 	"sshtunnels/pkg/backup"
 	"sshtunnels/pkg/monitoring"
 	"sshtunnels/pkg/session"
+	"sshtunnels/pkg/session/vt"
 	"sshtunnels/pkg/sshconfig"
 	"sshtunnels/pkg/tunnel"
 	"sshtunnels/pkg/version"
@@ -306,7 +307,7 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.Selection.Active {
 					active := a.SessionMgr.GetActive()
 					if active != nil && active.VT != nil {
-						text := session.ExtractSelectedText(active.VT, a.Selection)
+						text := session.ExtractSelectedText(active.VT, a.Selection, active.ScrollOffset)
 						if len(text) > 0 {
 							_ = clipboard.WriteAll(text)
 							a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
@@ -319,7 +320,7 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.Selection.Active {
 					active := a.SessionMgr.GetActive()
 					if active != nil && active.VT != nil {
-						text := session.ExtractSelectedText(active.VT, a.Selection)
+						text := session.ExtractSelectedText(active.VT, a.Selection, active.ScrollOffset)
 						if len(text) > 0 {
 							_ = clipboard.WriteAll(text)
 							a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
@@ -352,6 +353,32 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 
+			active := a.SessionMgr.GetActive()
+			if active != nil && active.VT != nil {
+				// Keyboard scrolling with PgUp / PgDown in normal shell mode
+				active.VT.Lock()
+				mode := active.VT.Mode()
+				sbLen := active.VT.ScrollbackLen()
+				active.VT.Unlock()
+
+				if mode&vt.ModeAltScreen == 0 {
+					if msg.Type == tea.KeyPgUp && sbLen > 0 {
+						active.ScrollOffset += 10
+						if active.ScrollOffset > sbLen {
+							active.ScrollOffset = sbLen
+						}
+						return a, nil
+					}
+					if msg.Type == tea.KeyPgDown && active.ScrollOffset > 0 {
+						active.ScrollOffset -= 10
+						if active.ScrollOffset < 0 {
+							active.ScrollOffset = 0
+						}
+						return a, nil
+					}
+				}
+			}
+
 			if msg.Alt && len(msg.Runes) == 1 && msg.Runes[0] >= '1' && msg.Runes[0] <= '9' {
 				tabIdx := int(msg.Runes[0] - '1')
 				if tabIdx < a.SessionMgr.Count() {
@@ -374,6 +401,11 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if a.Selection.Active {
 				a.Selection = session.SelectionRange{}
+			}
+
+			// Any typing snaps scrollOffset back to 0 (live view)
+			if active != nil && active.ScrollOffset > 0 {
+				active.ScrollOffset = 0
 			}
 
 			data := session.KeyToBytes(msg)
@@ -479,12 +511,57 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// Mouse wheel scrolling inside terminal
 		if msg.Button == tea.MouseButtonWheelUp {
 			if msg.Y >= 1 && msg.Y <= a.Height-2 {
-				_ = a.SessionMgr.WriteActive([]byte("\x1b[A\x1b[A\x1b[A"))
+				active := a.SessionMgr.GetActive()
+				if active != nil && active.VT != nil {
+					active.VT.Lock()
+					mode := active.VT.Mode()
+					sbLen := active.VT.ScrollbackLen()
+					active.VT.Unlock()
+
+					if mode&vt.ModeAltScreen != 0 {
+						// Fullscreen interactive app (vim, less, htop, mc, nano)
+						if mode&vt.ModeMouseMask != 0 {
+							_ = a.SessionMgr.WriteActive([]byte(fmt.Sprintf("\x1b[<64;%d;%dM", msg.X+1, msg.Y)))
+						} else {
+							_ = a.SessionMgr.WriteActive([]byte("\x1b[A\x1b[A\x1b[A"))
+						}
+					} else {
+						// Standard shell (bash, zsh, cmd): scroll terminal scrollback buffer!
+						if sbLen > 0 {
+							active.ScrollOffset += 3
+							if active.ScrollOffset > sbLen {
+								active.ScrollOffset = sbLen
+							}
+						}
+					}
+				}
 				return a, nil
 			}
 		} else if msg.Button == tea.MouseButtonWheelDown {
 			if msg.Y >= 1 && msg.Y <= a.Height-2 {
-				_ = a.SessionMgr.WriteActive([]byte("\x1b[B\x1b[B\x1b[B"))
+				active := a.SessionMgr.GetActive()
+				if active != nil && active.VT != nil {
+					active.VT.Lock()
+					mode := active.VT.Mode()
+					active.VT.Unlock()
+
+					if mode&vt.ModeAltScreen != 0 {
+						// Fullscreen interactive app
+						if mode&vt.ModeMouseMask != 0 {
+							_ = a.SessionMgr.WriteActive([]byte(fmt.Sprintf("\x1b[<65;%d;%dM", msg.X+1, msg.Y)))
+						} else {
+							_ = a.SessionMgr.WriteActive([]byte("\x1b[B\x1b[B\x1b[B"))
+						}
+					} else {
+						// Standard shell: scroll down towards active prompt
+						if active.ScrollOffset > 0 {
+							active.ScrollOffset -= 3
+							if active.ScrollOffset < 0 {
+								active.ScrollOffset = 0
+							}
+						}
+					}
+				}
 				return a, nil
 			}
 		}
@@ -569,7 +646,7 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if a.Selection.Active {
 				active := a.SessionMgr.GetActive()
 				if active != nil && active.VT != nil {
-					text := session.ExtractSelectedText(active.VT, a.Selection)
+					text := session.ExtractSelectedText(active.VT, a.Selection, active.ScrollOffset)
 					if len(strings.TrimSpace(text)) > 0 {
 						_ = clipboard.WriteAll(text)
 						a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
@@ -637,7 +714,7 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			} else {
 				active := a.SessionMgr.GetActive()
 				if active != nil && active.VT != nil {
-					text := session.ExtractSelectedText(active.VT, a.Selection)
+					text := session.ExtractSelectedText(active.VT, a.Selection, active.ScrollOffset)
 					if len(strings.TrimSpace(text)) > 0 {
 						_ = clipboard.WriteAll(text)
 						a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
@@ -1402,7 +1479,7 @@ func (a *AppModel) View() string {
 		active := a.SessionMgr.GetActive()
 		var termContent string
 		if active != nil {
-			termContent = session.RenderVTWithSelection(active.VT, a.Selection)
+			termContent = session.RenderVTWithSelection(active.VT, a.Selection, active.ScrollOffset)
 		} else {
 			termContent = "\n  Нет активных SSH сессий. Нажмите F1 для перехода в Дашборд."
 		}
@@ -1680,7 +1757,18 @@ func (a *AppModel) renderCollapsedHeader(width int) (string, []ButtonZone) {
 		plainLeft += "  " + tunBadge
 	}
 
-	leftRendered := appPart + hostPart + tunPart
+	var scrollPart string
+	if active != nil && active.ScrollOffset > 0 {
+		scrollBadge := fmt.Sprintf(" ▲ Скролл: %d ", active.ScrollOffset)
+		scrollPart = " " + lipgloss.NewStyle().
+			Background(lipgloss.Color("#78350f")).
+			Foreground(lipgloss.Color("#fde68a")).
+			Bold(true).
+			Render(scrollBadge)
+		plainLeft += " " + scrollBadge
+	}
+
+	leftRendered := appPart + hostPart + tunPart + scrollPart
 
 	dashBtnText := " [▲ F1 Дашборд] "
 	dashBtn := lipgloss.NewStyle().

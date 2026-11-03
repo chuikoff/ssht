@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hinshun/vt10x"
+	"sshtunnels/pkg/session/vt"
 )
 
 const (
@@ -52,14 +52,14 @@ func (s SelectionRange) IsSelected(x, y int) bool {
 }
 
 // ExtractSelectedText extracts the plain text from the virtual terminal within the selection range.
-func ExtractSelectedText(vt vt10x.Terminal, sel SelectionRange) string {
-	if !sel.Active || vt == nil {
+func ExtractSelectedText(term vt.Terminal, sel SelectionRange, scrollOffset int) string {
+	if !sel.Active || term == nil {
 		return ""
 	}
-	vt.Lock()
-	defer vt.Unlock()
+	term.Lock()
+	defer term.Unlock()
 
-	cols, rows := vt.Size()
+	cols, rows := term.Size()
 	if cols <= 0 || rows <= 0 {
 		return ""
 	}
@@ -104,7 +104,7 @@ func ExtractSelectedText(vt vt10x.Terminal, sel SelectionRange) string {
 
 		var lineRunes []rune
 		for x := startCol; x <= endCol; x++ {
-			g := vt.Cell(x, y)
+			g := term.CellWithScroll(x, y, scrollOffset)
 			ch := g.Char
 			if ch == 0 {
 				ch = ' '
@@ -118,30 +118,30 @@ func ExtractSelectedText(vt vt10x.Terminal, sel SelectionRange) string {
 }
 
 // RenderVT converts the current virtual terminal buffer into an ANSI-escaped string.
-func RenderVT(vt vt10x.Terminal) string {
-	return RenderVTWithSelection(vt, SelectionRange{})
+func RenderVT(term vt.Terminal) string {
+	return RenderVTWithSelection(term, SelectionRange{}, 0)
 }
 
 // RenderVTWithSelection converts the current virtual terminal buffer into an ANSI-escaped string,
-// highlighting cells that fall within the given SelectionRange.
-func RenderVTWithSelection(vt vt10x.Terminal, sel SelectionRange) string {
-	if vt == nil {
+// highlighting cells that fall within the given SelectionRange and offset by scrollOffset lines.
+func RenderVTWithSelection(term vt.Terminal, sel SelectionRange, scrollOffset int) string {
+	if term == nil {
 		return ""
 	}
 
-	vt.Lock()
-	defer vt.Unlock()
+	term.Lock()
+	defer term.Unlock()
 
-	cols, rows := vt.Size()
+	cols, rows := term.Size()
 	if cols <= 0 || rows <= 0 {
 		return ""
 	}
 
-	cur := vt.Cursor()
-	curVis := vt.CursorVisible()
+	cur := term.Cursor()
+	curVis := term.CursorVisible()
 
 	var sb strings.Builder
-	var lastFG, lastBG vt10x.Color = vt10x.DefaultFG, vt10x.DefaultBG
+	var lastFG, lastBG vt.Color = vt.DefaultFG, vt.DefaultBG
 	var lastMode int16 = 0
 	var lastCursor bool = false
 	var lastSel bool = false
@@ -150,8 +150,8 @@ func RenderVTWithSelection(vt vt10x.Terminal, sel SelectionRange) string {
 		// Find last character on line so we don't pad trailing whitespace with redundant color codes
 		lastCharIdx := -1
 		for x := cols - 1; x >= 0; x-- {
-			g := vt.Cell(x, y)
-			isCursor := curVis && cur.Y == y && cur.X == x
+			g := term.CellWithScroll(x, y, scrollOffset)
+			isCursor := (scrollOffset == 0) && curVis && cur.Y == y && cur.X == x
 			isSel := sel.IsSelected(x, y)
 			if (g.Char != 0 && g.Char != ' ') || isCursor || isSel {
 				lastCharIdx = x
@@ -161,8 +161,8 @@ func RenderVTWithSelection(vt vt10x.Terminal, sel SelectionRange) string {
 
 		limit := lastCharIdx + 1
 		for x := 0; x < limit; x++ {
-			g := vt.Cell(x, y)
-			isCursor := curVis && cur.Y == y && cur.X == x
+			g := term.CellWithScroll(x, y, scrollOffset)
+			isCursor := (scrollOffset == 0) && curVis && cur.Y == y && cur.X == x
 			isSel := sel.IsSelected(x, y)
 			fg := g.FG
 			bg := g.BG
@@ -188,7 +188,7 @@ func RenderVTWithSelection(vt vt10x.Terminal, sel SelectionRange) string {
 				}
 
 				if !isSel {
-					if fg != vt10x.DefaultFG {
+					if fg != vt.DefaultFG {
 						if fg < 8 {
 							sb.WriteString(fmt.Sprintf("\033[%dm", 30+fg))
 						} else if fg < 16 {
@@ -198,7 +198,7 @@ func RenderVTWithSelection(vt vt10x.Terminal, sel SelectionRange) string {
 						}
 					}
 
-					if bg != vt10x.DefaultBG {
+					if bg != vt.DefaultBG {
 						if bg < 8 {
 							sb.WriteString(fmt.Sprintf("\033[%dm", 40+bg))
 						} else if bg < 16 {
@@ -223,10 +223,10 @@ func RenderVTWithSelection(vt vt10x.Terminal, sel SelectionRange) string {
 			sb.WriteRune(ch)
 		}
 
-		if lastFG != vt10x.DefaultFG || lastBG != vt10x.DefaultBG || lastMode != 0 || lastCursor || lastSel {
+		if lastFG != vt.DefaultFG || lastBG != vt.DefaultBG || lastMode != 0 || lastCursor || lastSel {
 			sb.WriteString("\033[0m")
-			lastFG = vt10x.DefaultFG
-			lastBG = vt10x.DefaultBG
+			lastFG = vt.DefaultFG
+			lastBG = vt.DefaultBG
 			lastMode = 0
 			lastCursor = false
 			lastSel = false

@@ -172,6 +172,65 @@ func TestMouseSelection(t *testing.T) {
 	_, _ = app.handleMouse(rightClickMsg)
 }
 
+func TestMouseWheelScrollback(t *testing.T) {
+	metaStore, _ := sshconfig.NewMetadataStore()
+	tunMgr, _ := tunnel.NewManager()
+	app := NewAppModel(tunMgr, metaStore)
+	app.Width = 120
+	app.Height = 30
+	app.Ready = true
+	app.ViewMode = ViewModeTerminal
+
+	sess := app.SessionMgr.InjectMockSessionForTest("id-1", "Server1", "s1")
+
+	// Write 100 lines so that scrollback buffer fills with lines
+	for i := 1; i <= 100; i++ {
+		sess.VT.Write([]byte("Output log line\r\n"))
+	}
+
+	sbLen := sess.VT.ScrollbackLen()
+	if sbLen == 0 {
+		t.Fatalf("expected non-zero scrollback buffer length")
+	}
+
+	// 1. Wheel up inside terminal content area
+	wheelUpMsg := tea.MouseMsg{
+		X:      20,
+		Y:      10,
+		Button: tea.MouseButtonWheelUp,
+	}
+	_, _ = app.handleMouse(wheelUpMsg)
+
+	if sess.ScrollOffset != 3 {
+		t.Errorf("expected ScrollOffset == 3 after one wheel up, got %d", sess.ScrollOffset)
+	}
+
+	_, _ = app.handleMouse(wheelUpMsg)
+	if sess.ScrollOffset != 6 {
+		t.Errorf("expected ScrollOffset == 6 after two wheel ups, got %d", sess.ScrollOffset)
+	}
+
+	// 2. Wheel down inside terminal content area
+	wheelDownMsg := tea.MouseMsg{
+		X:      20,
+		Y:      10,
+		Button: tea.MouseButtonWheelDown,
+	}
+	_, _ = app.handleMouse(wheelDownMsg)
+
+	if sess.ScrollOffset != 3 {
+		t.Errorf("expected ScrollOffset == 3 after one wheel down, got %d", sess.ScrollOffset)
+	}
+
+	// 3. Typing any key snaps ScrollOffset back to 0 (live prompt)
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}}
+	_, _ = app.Update(keyMsg)
+
+	if sess.ScrollOffset != 0 {
+		t.Errorf("expected ScrollOffset == 0 after typing key, got %d", sess.ScrollOffset)
+	}
+}
+
 func TestMouseCloseTabAndDashboard(t *testing.T) {
 	metaStore, _ := sshconfig.NewMetadataStore()
 	tunMgr, _ := tunnel.NewManager()

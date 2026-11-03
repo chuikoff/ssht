@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hinshun/vt10x"
+	"sshtunnels/pkg/session/vt"
 )
 
 // SessionManager manages embedded SSH and shell sessions.
@@ -59,7 +59,7 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 		return nil, fmt.Errorf("ошибка запуска SSH PTY: %w", err)
 	}
 
-	vt := vt10x.New(vt10x.WithSize(cols, rows))
+	vt := vt.New(vt.WithSize(cols, rows))
 
 	id := fmt.Sprintf("sess_%d", time.Now().UnixNano())
 	sess := &Session{
@@ -268,7 +268,7 @@ func (sm *SessionManager) InjectMockSessionForTest(id, alias, target string) *Se
 		ID:     id,
 		Alias:  alias,
 		Target: target,
-		VT:     vt10x.New(vt10x.WithSize(80, 24)),
+		VT:     vt.New(vt.WithSize(80, 24)),
 	}
 	sm.sessions = append(sm.sessions, s)
 	return s

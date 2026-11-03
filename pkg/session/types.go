@@ -6,7 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/hinshun/vt10x"
+	"sshtunnels/pkg/session/vt"
 )
 
 // PTYDevice defines the interface for an OS pseudoconsole device.
@@ -17,14 +17,15 @@ type PTYDevice interface {
 
 // Session represents a single embedded SSH or shell session.
 type Session struct {
-	ID        string
-	Alias     string
-	Target    string
-	PTY       PTYDevice
-	VT        vt10x.Terminal
-	StartedAt time.Time
-	Closed    bool
-	mu        sync.Mutex
+	ID           string
+	Alias        string
+	Target       string
+	PTY          PTYDevice
+	VT           vt.Terminal
+	ScrollOffset int
+	StartedAt    time.Time
+	Closed       bool
+	mu           sync.Mutex
 }
 
 // Close terminates the session and its underlying PTY device.

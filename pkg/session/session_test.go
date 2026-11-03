@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/hinshun/vt10x"
+	"sshtunnels/pkg/session/vt"
 )
 
 func TestKeyToBytes(t *testing.T) {
@@ -57,10 +57,10 @@ func TestKeyToBytes(t *testing.T) {
 }
 
 func TestRenderVT(t *testing.T) {
-	vt := vt10x.New(vt10x.WithSize(40, 5))
-	vt.Write([]byte("\033[31mRed Alert\033[0m\r\nLine 2"))
+	term := vt.New(vt.WithSize(40, 5))
+	term.Write([]byte("\033[31mRed Alert\033[0m\r\nLine 2"))
 
-	rendered := RenderVT(vt)
+	rendered := RenderVT(term)
 	if !strings.Contains(rendered, "Red Alert") {
 		t.Errorf("RenderVT missing 'Red Alert', got: %s", rendered)
 	}
@@ -112,8 +112,8 @@ func TestSessionManagerBasic(t *testing.T) {
 }
 
 func TestSelectionAndExtraction(t *testing.T) {
-	vt := vt10x.New(vt10x.WithSize(40, 5))
-	vt.Write([]byte("Line 1: Hello World from SSH\r\nLine 2: Server running on Ubuntu"))
+	term := vt.New(vt.WithSize(40, 5))
+	term.Write([]byte("Line 1: Hello World from SSH\r\nLine 2: Server running on Ubuntu"))
 
 	sel := SelectionRange{
 		Active: true,
@@ -130,7 +130,7 @@ func TestSelectionAndExtraction(t *testing.T) {
 		t.Errorf("cells outside range should not be selected")
 	}
 
-	text := ExtractSelectedText(vt, sel)
+	text := ExtractSelectedText(term, sel, 0)
 	if text != "Hello World" {
 		t.Errorf("ExtractSelectedText = %q, want %q", text, "Hello World")
 	}
@@ -146,13 +146,13 @@ func TestSelectionAndExtraction(t *testing.T) {
 	if !revSel.IsSelected(10, 0) {
 		t.Errorf("expected cell (10, 0) to be selected in reverse selection")
 	}
-	revText := ExtractSelectedText(vt, revSel)
+	revText := ExtractSelectedText(term, revSel, 0)
 	if revText != "Hello World" {
 		t.Errorf("reverse ExtractSelectedText = %q, want %q", revText, "Hello World")
 	}
 
 	// Render with selection contains reverse video code \033[7m
-	rendered := RenderVTWithSelection(vt, sel)
+	rendered := RenderVTWithSelection(term, sel, 0)
 	if !strings.Contains(rendered, "\033[7m") {
 		t.Errorf("RenderVTWithSelection should contain reverse ANSI code for selection highlight")
 	}
