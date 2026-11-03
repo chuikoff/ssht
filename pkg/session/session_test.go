@@ -261,3 +261,39 @@ func TestSessionStateTransitions(t *testing.T) {
 		t.Fatalf("IsConnected should be false after Close()")
 	}
 }
+
+func TestHasSuccessfulConnection(t *testing.T) {
+	// 1. Empty terminal
+	termEmpty := vt.New(vt.WithSize(80, 24))
+	if hasSuccessfulConnection(termEmpty) {
+		t.Fatalf("expected hasSuccessfulConnection == false for empty terminal")
+	}
+
+	// 2. Terminal with only ANSI cursor/mode sequences (what ConPTY sends at start)
+	termEscapeOnly := vt.New(vt.WithSize(80, 24))
+	termEscapeOnly.Write([]byte("\x1b[?9001h\x1b[?1004h\x1b[?25h\x1b[2J"))
+	if hasSuccessfulConnection(termEscapeOnly) {
+		t.Fatalf("expected hasSuccessfulConnection == false for terminal with only invisible control codes")
+	}
+
+	// 3. Terminal with SSH fatal error
+	termError := vt.New(vt.WithSize(80, 24))
+	termError.Write([]byte("ssh: connect to host 192.168.88.91 port 22: Connection timed out\r\n"))
+	if hasSuccessfulConnection(termError) {
+		t.Fatalf("expected hasSuccessfulConnection == false for fatal connection error output")
+	}
+
+	// 4. Terminal with real remote prompt
+	termConnected := vt.New(vt.WithSize(80, 24))
+	termConnected.Write([]byte("Welcome to Ubuntu 26.04\r\nroot@server:~# "))
+	if !hasSuccessfulConnection(termConnected) {
+		t.Fatalf("expected hasSuccessfulConnection == true for valid shell output")
+	}
+
+	// 5. Terminal with password prompt
+	termPass := vt.New(vt.WithSize(80, 24))
+	termPass.Write([]byte("root@192.168.88.91's password: "))
+	if !hasSuccessfulConnection(termPass) {
+		t.Fatalf("expected hasSuccessfulConnection == true for password prompt")
+	}
+}

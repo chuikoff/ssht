@@ -3,6 +3,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,6 +41,11 @@ func (w *windowsPTY) Resize(cols, rows int) error {
 	return w.cpty.Resize(cols, rows)
 }
 
+func (w *windowsPTY) Wait() (int, error) {
+	code, err := w.cpty.Wait(context.Background())
+	return int(code), err
+}
+
 // StartPTY spawns a process inside a Windows ConPTY pseudoconsole with UTF-8 encoding.
 func StartPTY(command string, args []string, cols, rows int) (PTYDevice, error) {
 	if !conpty.IsConPtyAvailable() {
@@ -63,9 +69,6 @@ func StartPTY(command string, args []string, cols, rows int) (PTYDevice, error) 
 			cmdLine = fmt.Sprintf("\"%s\"", lp)
 		}
 	}
-
-	// Wrap in cmd.exe /c "chcp 65001 >nul & ..." so ConPTY's inner console explicitly switches to UTF-8
-	cmdLine = fmt.Sprintf("cmd.exe /c \"chcp 65001 >nul & %s\"", cmdLine)
 
 	env := os.Environ()
 	// Filter out any existing conflicting LANG/LC_* from Windows env

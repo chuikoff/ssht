@@ -38,6 +38,17 @@ func (u *unixPTY) Resize(cols, rows int) error {
 	})
 }
 
+func (u *unixPTY) Wait() (int, error) {
+	if u.cmd != nil && u.cmd.Process != nil {
+		state, err := u.cmd.Process.Wait()
+		if err != nil {
+			return -1, err
+		}
+		return state.ExitCode(), nil
+	}
+	return 0, nil
+}
+
 // StartPTY spawns a process attached to a Unix PTY.
 func StartPTY(command string, args []string, cols, rows int) (PTYDevice, error) {
 	cmd := exec.Command(command, args...)

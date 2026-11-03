@@ -1,4 +1,4 @@
 package version
 
 // Current defines the application version of SSHT.
-const Current = "1.3.5"
+const Current = "1.3.6"

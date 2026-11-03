@@ -79,11 +79,22 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 	sm.activeIdx = len(sm.sessions) - 1
 	sm.mu.Unlock()
 
+	// Goroutine waiting for underlying process to exit
+	go func() {
+		if sess.PTY != nil {
+			exitCode, _ := sess.PTY.Wait()
+			sess.mu.Lock()
+			sess.ExitCode = exitCode
+			sess.mu.Unlock()
+		}
+		_ = sess.Close()
+		sm.handleSessionExit(sess.ID)
+	}()
+
 	// Goroutine reading from PTY and parsing into Virtual Terminal emulator
 	go func() {
 		buf := make([]byte, 4096)
 		var leftover []byte
-		var connectTimer *time.Timer
 		var onceConnected sync.Once
 
 		for {
@@ -107,29 +118,15 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 					leftover = append(leftover, tail...)
 				}
 
-				// Connection detection: if still connecting, check if output confirms failure or success
+				// Connection detection: only transition to Connected when VT has visible non-error content
 				if sess.GetState() == SessionStateConnecting {
-					text := string(chunk)
-					isFailure := strings.Contains(text, "Connection timed out") ||
-						strings.Contains(text, "Connection refused") ||
-						strings.Contains(text, "No route to host") ||
-						strings.Contains(text, "Could not resolve hostname") ||
-						strings.Contains(text, "Network is unreachable") ||
-						strings.Contains(text, "Host key verification failed") ||
-						strings.Contains(text, "Permission denied")
-
-					if !isFailure && connectTimer == nil {
-						// Delay slightly (300ms) to ensure process doesn't exit immediately on error
-						connectTimer = time.AfterFunc(300*time.Millisecond, func() {
-							if !sess.IsClosed() {
-								onceConnected.Do(func() {
-									if sess.SetConnected() {
-										sm.Notify()
-										if sm.OnConnected != nil {
-											sm.OnConnected(sess.Target, sess.Alias)
-										}
-									}
-								})
+					if hasSuccessfulConnection(sess.VT) {
+						onceConnected.Do(func() {
+							if sess.SetConnected() {
+								sm.Notify()
+								if sm.OnConnected != nil {
+									sm.OnConnected(sess.Target, sess.Alias)
+								}
 							}
 						})
 					}
@@ -137,9 +134,6 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 			}
 		}
 
-		if connectTimer != nil {
-			connectTimer.Stop()
-		}
 		_ = sess.Close()
 		sm.handleSessionExit(sess.ID)
 	}()
@@ -252,15 +246,6 @@ func (sm *SessionManager) WriteActive(data []byte) error {
 	if s == nil || s.PTY == nil || s.IsClosed() {
 		return nil
 	}
-	// If session is still connecting, typing input indicates interactive session -> mark connected
-	if s.GetState() == SessionStateConnecting {
-		if s.SetConnected() {
-			sm.Notify()
-			if sm.OnConnected != nil {
-				sm.OnConnected(s.Target, s.Alias)
-			}
-		}
-	}
 	_, err := s.PTY.Write(data)
 	return err
 }
@@ -291,6 +276,58 @@ func splitIncompleteUTF8(b []byte) ([]byte, []byte) {
 		}
 	}
 	return b, nil
+}
+
+// hasSuccessfulConnection returns true if the virtual terminal contains visible text
+// that is NOT an SSH connection error message.
+func hasSuccessfulConnection(term vt.Terminal) bool {
+	if term == nil {
+		return false
+	}
+	term.Lock()
+	defer term.Unlock()
+
+	cols, rows := term.Size()
+	var sb strings.Builder
+	hasNonSpace := false
+
+	for y := 0; y < rows; y++ {
+		lineHasChar := false
+		for x := 0; x < cols; x++ {
+			ch := term.Cell(x, y).Char
+			if ch != 0 && ch != ' ' {
+				hasNonSpace = true
+				lineHasChar = true
+			}
+			if lineHasChar {
+				if ch == 0 {
+					sb.WriteRune(' ')
+				} else {
+					sb.WriteRune(ch)
+				}
+			}
+		}
+		if lineHasChar {
+			sb.WriteRune('\n')
+		}
+	}
+
+	if !hasNonSpace {
+		return false
+	}
+
+	text := strings.ToLower(sb.String())
+	if strings.Contains(text, "connection timed out") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "no route to host") ||
+		strings.Contains(text, "could not resolve hostname") ||
+		strings.Contains(text, "network is unreachable") ||
+		strings.Contains(text, "host key verification failed") ||
+		strings.Contains(text, "permission denied") {
+		return false
+	}
+
+	return true
 }
 
 // ResizeAll resizes all sessions' PTY and VT emulators.

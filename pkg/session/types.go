@@ -13,6 +13,7 @@ import (
 type PTYDevice interface {
 	io.ReadWriteCloser
 	Resize(cols, rows int) error
+	Wait() (int, error)
 }
 
 // SessionState represents the connection lifecycle state of an embedded SSH session.
@@ -34,6 +35,7 @@ type Session struct {
 	ScrollOffset int
 	StartedAt    time.Time
 	ConnectedAt  time.Time
+	ExitCode     int
 	State        SessionState
 	Closed       bool
 	mu           sync.Mutex
