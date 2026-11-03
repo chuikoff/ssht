@@ -315,6 +315,24 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.Selection = session.SelectionRange{}
 					return a, nil
 				}
+			case tea.KeyEnter:
+				if a.Selection.Active {
+					active := a.SessionMgr.GetActive()
+					if active != nil && active.VT != nil {
+						text := session.ExtractSelectedText(active.VT, a.Selection)
+						if len(text) > 0 {
+							_ = clipboard.WriteAll(text)
+							a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
+						}
+					}
+					a.Selection = session.SelectionRange{}
+					return a, nil
+				}
+			case tea.KeyEsc:
+				if a.Selection.Active {
+					a.Selection = session.SelectionRange{}
+					return a, nil
+				}
 			case tea.KeyCtrlW:
 				active := a.SessionMgr.GetActive()
 				if active != nil {
@@ -544,8 +562,24 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Terminal content area (Y >= 1 && Y <= a.Height - 2)
-		// 1. Right Click: Paste from clipboard into active SSH session
+		// 1. Right Click:
+		// - If text is currently selected: COPY selection to clipboard and CLEAR selection (do NOT paste!)
+		// - If no text is selected: PASTE from clipboard into active SSH session
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonRight {
+			if a.Selection.Active {
+				active := a.SessionMgr.GetActive()
+				if active != nil && active.VT != nil {
+					text := session.ExtractSelectedText(active.VT, a.Selection)
+					if len(strings.TrimSpace(text)) > 0 {
+						_ = clipboard.WriteAll(text)
+						a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
+					}
+				}
+				a.Selection = session.SelectionRange{}
+				return a, nil
+			}
+
+			// No selection: paste from clipboard into active SSH session
 			active := a.SessionMgr.GetActive()
 			if active != nil {
 				text, err := clipboard.ReadAll()

@@ -153,6 +153,23 @@ func TestMouseSelection(t *testing.T) {
 	if !app.Selection.Active {
 		t.Fatalf("expected selection active to remain true for highlighted text")
 	}
+
+	// 4. Right-click while selection is active: COPIES text and CLEARS selection (does NOT paste!)
+	rightClickMsg := tea.MouseMsg{
+		X:      15,
+		Y:      5,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonRight,
+	}
+	_, _ = app.handleMouse(rightClickMsg)
+
+	if app.Selection.Active {
+		t.Fatalf("expected selection to be cleared after right-click copy")
+	}
+
+	// 5. Next Right-click when nothing is selected: PASTES from clipboard
+	// (handled without crashing or error)
+	_, _ = app.handleMouse(rightClickMsg)
 }
 
 func TestMouseCloseTabAndDashboard(t *testing.T) {
