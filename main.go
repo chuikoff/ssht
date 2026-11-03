@@ -26,6 +26,8 @@ func truncateString(s string, maxLen int) string {
 }
 
 func main() {
+	initConsoleUTF8()
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "-v", "--version":

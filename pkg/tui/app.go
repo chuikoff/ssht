@@ -120,20 +120,27 @@ func NewAppModel(m *tunnel.Manager, meta *sshconfig.MetadataStore) *AppModel {
 	help := NewHelpView()
 	sm := session.NewSessionManager()
 
-	return &AppModel{
-		Manager:       m,
-		MetaStore:     meta,
-		ActiveTab:     TabHosts,
-		HostsView:     hv,
-		TunnelsView:   tv,
-		HelpView:      help,
-		ActiveModal:   ModalNone,
+	app := &AppModel{
+		Manager:          m,
+		MetaStore:        meta,
+		ActiveTab:        TabHosts,
+		HostsView:        hv,
+		TunnelsView:      tv,
+		HelpView:         help,
+		ActiveModal:      ModalNone,
 		ViewMode:         ViewModeDashboard,
 		SessionMgr:       sm,
 		TerminalTopZones: []ButtonZone{},
 		TerminalTabZones: []ButtonZone{},
 		SessionBarZones:  []ButtonZone{},
 	}
+
+	sm.OnConnected = func(target, alias string) {
+		meta.RecordConnection(target)
+		app.notify(fmt.Sprintf("✔ Терминал подключен к '%s'", alias), false)
+	}
+
+	return app
 }
 
 func (a *AppModel) Init() tea.Cmd {
@@ -237,11 +244,22 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.waitForSessionActivity()
 
 	case sessionClosedMsg:
+		s := a.SessionMgr.FindByID(msg.id)
+		wasConnected := false
+		alias := msg.id
+		if s != nil {
+			wasConnected = s.IsConnected()
+			alias = s.Alias
+		}
 		a.SessionMgr.Close(msg.id)
 		if a.SessionMgr.Count() == 0 {
 			a.ViewMode = ViewModeDashboard
 		}
-		a.notify("SSH сессия завершена", false)
+		if wasConnected {
+			a.notify(fmt.Sprintf("SSH сессия '%s' отключена", alias), false)
+		} else {
+			a.notify(fmt.Sprintf("Не удалось подключиться к '%s' (хост недоступен)", alias), true)
+		}
 		return a, a.waitForSessionActivity()
 
 	case monitorMetricsMsg:
@@ -1685,14 +1703,13 @@ func (a *AppModel) connectHost(host *sshconfig.HostConfig) tea.Cmd {
 	}
 	target := host.PrimaryAlias()
 	displayName := host.DisplayName()
-	a.MetaStore.RecordConnection(target)
 
 	// If already open, switch to it
 	idx, existing := a.SessionMgr.FindByTarget(target)
 	if existing != nil && !existing.IsClosed() {
 		a.SessionMgr.SetActive(idx)
 		a.ViewMode = ViewModeTerminal
-		a.notify(fmt.Sprintf("Переключено на активную сессию '%s'", displayName), false)
+		a.notify(fmt.Sprintf("Переключено на сессию '%s'", displayName), false)
 		return nil
 	}
 
@@ -1712,7 +1729,7 @@ func (a *AppModel) connectHost(host *sshconfig.HostConfig) tea.Cmd {
 	}
 
 	a.ViewMode = ViewModeTerminal
-	a.notify(fmt.Sprintf("Терминал подключен к '%s'", displayName), false)
+	a.notify(fmt.Sprintf("Подключение к '%s'...", displayName), false)
 	return nil
 }
 
@@ -1738,11 +1755,15 @@ func (a *AppModel) renderCollapsedHeader(width int) (string, []ButtonZone) {
 	var hostPart string
 	active := a.SessionMgr.GetActive()
 	if active != nil {
-		statusText := "🟢 В сети"
-		statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e")).Bold(true)
-		if active.IsClosed() {
-			statusText = "🔴 Отключен"
+		statusText := active.StatusText()
+		var statusStyle lipgloss.Style
+		switch active.GetState() {
+		case session.SessionStateConnected:
+			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e")).Bold(true)
+		case session.SessionStateClosed:
 			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444")).Bold(true)
+		default: // SessionStateConnecting
+			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f59e0b")).Bold(true)
 		}
 		hostStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#38bdf8")).Bold(true)
 		hostPart = fmt.Sprintf(" │ %s: %s (%s)", statusStyle.Render(statusText), hostStyle.Render(active.Alias), active.Target)
@@ -1848,10 +1869,7 @@ func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
 	for i, s := range sessions {
 		isActive := (i == activeIdx)
 
-		statusIcon := "🟢"
-		if s.IsClosed() {
-			statusIcon = "🔴"
-		}
+		statusIcon := s.StatusIcon()
 
 		tabTitle := fmt.Sprintf(" %d: %s %s ", i+1, s.Alias, statusIcon)
 		titleLen := utf8.RuneCountInString(tabTitle)
@@ -1981,10 +1999,7 @@ func (a *AppModel) renderDashboardSessionBar(width int) (string, []ButtonZone) {
 	curX += utf8.RuneCountInString(label)
 
 	for i, s := range a.SessionMgr.List() {
-		statusIcon := "🟢"
-		if s.IsClosed() {
-			statusIcon = "🔴"
-		}
+		statusIcon := s.StatusIcon()
 		tabText := fmt.Sprintf("[%d: %s %s] ", i+1, s.Alias, statusIcon)
 		tabLen := utf8.RuneCountInString(tabText)
 

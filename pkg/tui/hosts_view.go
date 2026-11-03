@@ -42,7 +42,7 @@ func NewHostsView(meta *sshconfig.MetadataStore) *HostsView {
 	hv := &HostsView{
 		MetaStore:    meta,
 		FilterInput:  ti,
-		HeaderOffset: 3,
+		HeaderOffset: 5,
 	}
 	_ = hv.Reload()
 	return hv
@@ -208,9 +208,9 @@ func (v *HostsView) View(width, height int) string {
 
 	var sb strings.Builder
 
-	v.HeaderOffset = 4
+	v.HeaderOffset = 5
 	if v.Filtering || v.FilterInput.Value() != "" {
-		v.HeaderOffset = 6
+		v.HeaderOffset = 7
 		sb.WriteString(lipgloss.NewStyle().MarginBottom(1).Render(v.FilterInput.View()))
 		sb.WriteString("\n")
 	}

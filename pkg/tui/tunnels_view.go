@@ -33,7 +33,7 @@ func NewTunnelsView(m *tunnel.Manager) *TunnelsView {
 	tv := &TunnelsView{
 		Manager:      m,
 		FilterInput:  ti,
-		HeaderOffset: 3,
+		HeaderOffset: 4,
 	}
 	tv.ApplyFilter()
 	return tv
@@ -159,9 +159,9 @@ func (v *TunnelsView) View(width, height int) string {
 
 	var sb strings.Builder
 
-	v.HeaderOffset = 3
+	v.HeaderOffset = 4
 	if v.Filtering || v.FilterInput.Value() != "" {
-		v.HeaderOffset = 5
+		v.HeaderOffset = 6
 		sb.WriteString(lipgloss.NewStyle().MarginBottom(1).Render(v.FilterInput.View()))
 		sb.WriteString("\n")
 	}

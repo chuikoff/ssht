@@ -5,6 +5,7 @@ package session
 import (
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/creack/pty"
 )
@@ -40,7 +41,23 @@ func (u *unixPTY) Resize(cols, rows int) error {
 // StartPTY spawns a process attached to a Unix PTY.
 func StartPTY(command string, args []string, cols, rows int) (PTYDevice, error) {
 	cmd := exec.Command(command, args...)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	env := os.Environ()
+	var filteredEnv []string
+	for _, e := range env {
+		u := strings.ToUpper(e)
+		if !strings.HasPrefix(u, "LANG=") &&
+			!strings.HasPrefix(u, "LC_") &&
+			!strings.HasPrefix(u, "TERM=") {
+			filteredEnv = append(filteredEnv, e)
+		}
+	}
+	filteredEnv = append(filteredEnv,
+		"TERM=xterm-256color",
+		"LANG=en_US.UTF-8",
+		"LC_ALL=en_US.UTF-8",
+		"LC_CTYPE=en_US.UTF-8",
+	)
+	cmd.Env = filteredEnv
 
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(cols),

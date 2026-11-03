@@ -157,3 +157,107 @@ func TestSelectionAndExtraction(t *testing.T) {
 		t.Errorf("RenderVTWithSelection should contain reverse ANSI code for selection highlight")
 	}
 }
+
+func TestRussianCyrillicUTF8(t *testing.T) {
+	// 1. KeyToBytes Cyrillic typing
+	cyrillicRune := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'П'}}
+	bytesGot := KeyToBytes(cyrillicRune)
+	if string(bytesGot) != "П" {
+		t.Fatalf("expected 'П', got %v", bytesGot)
+	}
+
+	// 2. Virtual terminal Cyrillic rendering
+	term := vt.New(vt.WithSize(40, 5))
+	term.Write([]byte("Привет, мир! Тест UTF-8 кодировки\r\n"))
+	rendered := RenderVT(term)
+
+	if !strings.Contains(rendered, "Привет, мир!") {
+		t.Fatalf("RenderVT does not contain expected Russian text 'Привет, мир!', got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "Тест UTF-8") {
+		t.Fatalf("RenderVT does not contain expected Russian text 'Тест UTF-8', got: %s", rendered)
+	}
+}
+
+func TestSplitIncompleteUTF8(t *testing.T) {
+	// ASCII complete
+	ascii := []byte("Hello world 123")
+	comp, left := splitIncompleteUTF8(ascii)
+	if string(comp) != "Hello world 123" || len(left) != 0 {
+		t.Fatalf("ASCII split failed: comp=%q, left=%v", comp, left)
+	}
+
+	// Complete Cyrillic UTF-8 ("Привет")
+	cyrillic := []byte("Привет")
+	comp, left = splitIncompleteUTF8(cyrillic)
+	if string(comp) != "Привет" || len(left) != 0 {
+		t.Fatalf("Complete Cyrillic failed: comp=%q, left=%v", comp, left)
+	}
+
+	// Incomplete Cyrillic: "Привет" truncated by 1 byte (the second byte of 'т' missing)
+	incomplete := cyrillic[:len(cyrillic)-1]
+	comp, left = splitIncompleteUTF8(incomplete)
+	if string(comp) != "Приве" {
+		t.Fatalf("expected comp='Приве', got %q", comp)
+	}
+	if len(left) != 1 {
+		t.Fatalf("expected 1 leftover byte, got %d", len(left))
+	}
+
+	// Re-assembling with the missing byte gives back full "т"
+	reassembled := append(left, cyrillic[len(cyrillic)-1])
+	if string(reassembled) != "т" {
+		t.Fatalf("expected reassembled 'т', got %q", reassembled)
+	}
+}
+
+func TestSessionStateTransitions(t *testing.T) {
+	s := &Session{
+		ID:     "test-sess",
+		Alias:  "Server-Offline",
+		Target: "192.168.88.91",
+		State:  SessionStateConnecting,
+	}
+
+	if s.GetState() != SessionStateConnecting {
+		t.Fatalf("expected initial state SessionStateConnecting")
+	}
+	if s.StatusIcon() != "🟡" {
+		t.Fatalf("expected status icon 🟡 for connecting, got %s", s.StatusIcon())
+	}
+	if s.StatusText() != "🟡 Подключение..." {
+		t.Fatalf("expected status text '🟡 Подключение...', got %s", s.StatusText())
+	}
+	if s.IsConnected() {
+		t.Fatalf("IsConnected should be false while connecting")
+	}
+
+	// Transition to connected
+	if !s.SetConnected() {
+		t.Fatalf("expected SetConnected() to return true on transition")
+	}
+	if s.GetState() != SessionStateConnected {
+		t.Fatalf("expected state SessionStateConnected")
+	}
+	if s.StatusIcon() != "🟢" {
+		t.Fatalf("expected status icon 🟢, got %s", s.StatusIcon())
+	}
+	if !s.IsConnected() {
+		t.Fatalf("IsConnected should be true after SetConnected()")
+	}
+
+	// Close session
+	_ = s.Close()
+	if s.GetState() != SessionStateClosed {
+		t.Fatalf("expected state SessionStateClosed after Close()")
+	}
+	if s.StatusIcon() != "🔴" {
+		t.Fatalf("expected status icon 🔴, got %s", s.StatusIcon())
+	}
+	if !s.IsClosed() {
+		t.Fatalf("IsClosed should be true after Close()")
+	}
+	if s.IsConnected() {
+		t.Fatalf("IsConnected should be false after Close()")
+	}
+}

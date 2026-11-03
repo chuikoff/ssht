@@ -316,3 +316,101 @@ func TestLastClickDoubleClick(t *testing.T) {
 		t.Errorf("click after timeout should not be double-click")
 	}
 }
+
+func TestHostsViewMouseRowClick(t *testing.T) {
+	metaStore, _ := sshconfig.NewMetadataStore()
+	tunMgr, _ := tunnel.NewManager()
+	app := NewAppModel(tunMgr, metaStore)
+	app.Width = 100
+	app.Height = 25
+	app.Ready = true
+	app.ActiveTab = TabHosts
+	app.ViewMode = ViewModeDashboard
+
+	// Set up 3 dummy hosts in HostsView
+	app.HostsView.Hosts = []*sshconfig.HostConfig{
+		{HostName: "192.168.1.10", Aliases: []string{"Server-Alpha"}},
+		{HostName: "192.168.1.20", Aliases: []string{"Server-Beta"}},
+		{HostName: "192.168.1.30", Aliases: []string{"Server-Gamma"}},
+	}
+	app.HostsView.ApplyFilter()
+
+	// Render view to initialize HeaderOffset and MaxRows
+	_ = app.View()
+
+	// Clicking Screen Y = 5 MUST select the first host (index 0, Server-Alpha)
+	clickY5 := tea.MouseMsg{
+		X:      20,
+		Y:      5,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	_, _ = app.handleMouse(clickY5)
+
+	if app.HostsView.SelectedIndex != 0 {
+		t.Fatalf("expected clicking Y=5 to select index 0 (Server-Alpha), got index %d (%s)",
+			app.HostsView.SelectedIndex, app.HostsView.SelectedHost().PrimaryAlias())
+	}
+
+	// Clicking Screen Y = 6 MUST select the second host (index 1, Server-Beta)
+	clickY6 := tea.MouseMsg{
+		X:      20,
+		Y:      6,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	_, _ = app.handleMouse(clickY6)
+
+	if app.HostsView.SelectedIndex != 1 {
+		t.Fatalf("expected clicking Y=6 to select index 1 (Server-Beta), got index %d (%s)",
+			app.HostsView.SelectedIndex, app.HostsView.SelectedHost().PrimaryAlias())
+	}
+}
+
+func TestTunnelsViewMouseRowClick(t *testing.T) {
+	metaStore, _ := sshconfig.NewMetadataStore()
+	tunMgr, _ := tunnel.NewManager()
+	app := NewAppModel(tunMgr, metaStore)
+	app.Width = 100
+	app.Height = 25
+	app.Ready = true
+	app.ActiveTab = TabTunnels
+	app.ViewMode = ViewModeDashboard
+
+	// Set custom tunnels directly on TunnelsView to ensure predictable list
+	app.TunnelsView.Filtered = []*tunnel.Tunnel{
+		{ID: "t1", Name: "Tun-Alpha", Type: tunnel.TypeLocal, LocalPort: 8080, RemoteHost: "localhost", RemotePort: 80, Host: "h1"},
+		{ID: "t2", Name: "Tun-Beta", Type: tunnel.TypeLocal, LocalPort: 8081, RemoteHost: "localhost", RemotePort: 81, Host: "h2"},
+	}
+
+	// Render view to initialize HeaderOffset and MaxRows
+	_ = app.View()
+
+	// Clicking Screen Y = 4 MUST select the first tunnel (index 0, Tun-Alpha)
+	clickY4 := tea.MouseMsg{
+		X:      20,
+		Y:      4,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	_, _ = app.handleMouse(clickY4)
+
+	if app.TunnelsView.SelectedIndex != 0 {
+		t.Fatalf("expected clicking Y=4 to select index 0 (Tun-Alpha), got index %d (%s)",
+			app.TunnelsView.SelectedIndex, app.TunnelsView.SelectedTunnel().Name)
+	}
+
+	// Clicking Screen Y = 5 MUST select the second tunnel (index 1, Tun-Beta)
+	clickY5 := tea.MouseMsg{
+		X:      20,
+		Y:      5,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	_, _ = app.handleMouse(clickY5)
+
+	if app.TunnelsView.SelectedIndex != 1 {
+		t.Fatalf("expected clicking Y=5 to select index 1 (Tun-Beta), got index %d (%s)",
+			app.TunnelsView.SelectedIndex, app.TunnelsView.SelectedTunnel().Name)
+	}
+}

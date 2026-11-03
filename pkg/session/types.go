@@ -15,6 +15,15 @@ type PTYDevice interface {
 	Resize(cols, rows int) error
 }
 
+// SessionState represents the connection lifecycle state of an embedded SSH session.
+type SessionState int
+
+const (
+	SessionStateConnecting SessionState = iota // 🟡 Подключение...
+	SessionStateConnected                      // 🟢 В сети
+	SessionStateClosed                         // 🔴 Отключен
+)
+
 // Session represents a single embedded SSH or shell session.
 type Session struct {
 	ID           string
@@ -24,6 +33,8 @@ type Session struct {
 	VT           vt.Terminal
 	ScrollOffset int
 	StartedAt    time.Time
+	ConnectedAt  time.Time
+	State        SessionState
 	Closed       bool
 	mu           sync.Mutex
 }
@@ -36,6 +47,7 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.Closed = true
+	s.State = SessionStateClosed
 	if s.PTY != nil {
 		return s.PTY.Close()
 	}
@@ -46,14 +58,61 @@ func (s *Session) Close() error {
 func (s *Session) IsClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.Closed
+	return s.Closed || s.State == SessionStateClosed
 }
 
 // IsConnected checks if session is alive and connected.
 func (s *Session) IsConnected() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.Closed
+	return !s.Closed && s.State == SessionStateConnected
+}
+
+// GetState returns the current SessionState thread-safely.
+func (s *Session) GetState() SessionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.State
+}
+
+// SetConnected marks the session as successfully established. Returns true if state changed.
+func (s *Session) SetConnected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Closed || s.State == SessionStateConnected {
+		return false
+	}
+	s.State = SessionStateConnected
+	s.ConnectedAt = time.Now()
+	return true
+}
+
+// StatusIcon returns a visual status badge icon ("🟡", "🟢", "🔴").
+func (s *Session) StatusIcon() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.State {
+	case SessionStateConnected:
+		return "🟢"
+	case SessionStateClosed:
+		return "🔴"
+	default:
+		return "🟡"
+	}
+}
+
+// StatusText returns a human-readable status description.
+func (s *Session) StatusText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.State {
+	case SessionStateConnected:
+		return "🟢 В сети"
+	case SessionStateClosed:
+		return "🔴 Отключен"
+	default:
+		return "🟡 Подключение..."
+	}
 }
 
 // KeyToBytes converts a Bubble Tea KeyMsg to raw bytes suitable for PTY input.

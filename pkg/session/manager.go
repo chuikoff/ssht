@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -10,11 +11,12 @@ import (
 
 // SessionManager manages embedded SSH and shell sessions.
 type SessionManager struct {
-	sessions  []*Session
-	activeIdx int
-	mu        sync.RWMutex
-	notifyCh  chan struct{}
-	closedCh  chan string
+	sessions    []*Session
+	activeIdx   int
+	mu          sync.RWMutex
+	notifyCh    chan struct{}
+	closedCh    chan string
+	OnConnected func(target, alias string)
 }
 
 // NewSessionManager creates a new session manager instance.
@@ -69,6 +71,7 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 		PTY:       ptyDev,
 		VT:        vt,
 		StartedAt: time.Now(),
+		State:     SessionStateConnecting,
 	}
 
 	sm.mu.Lock()
@@ -79,17 +82,64 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 	// Goroutine reading from PTY and parsing into Virtual Terminal emulator
 	go func() {
 		buf := make([]byte, 4096)
+		var leftover []byte
+		var connectTimer *time.Timer
+		var onceConnected sync.Once
+
 		for {
 			n, err := sess.PTY.Read(buf)
 			if err != nil {
 				break
 			}
 			if n > 0 {
-				sess.VT.Write(buf[:n])
-				sm.Notify()
+				chunk := buf[:n]
+				if len(leftover) > 0 {
+					chunk = append(leftover, chunk...)
+					leftover = nil
+				}
+
+				validBytes, tail := splitIncompleteUTF8(chunk)
+				if len(validBytes) > 0 {
+					sess.VT.Write(validBytes)
+					sm.Notify()
+				}
+				if len(tail) > 0 {
+					leftover = append(leftover, tail...)
+				}
+
+				// Connection detection: if still connecting, check if output confirms failure or success
+				if sess.GetState() == SessionStateConnecting {
+					text := string(chunk)
+					isFailure := strings.Contains(text, "Connection timed out") ||
+						strings.Contains(text, "Connection refused") ||
+						strings.Contains(text, "No route to host") ||
+						strings.Contains(text, "Could not resolve hostname") ||
+						strings.Contains(text, "Network is unreachable") ||
+						strings.Contains(text, "Host key verification failed") ||
+						strings.Contains(text, "Permission denied")
+
+					if !isFailure && connectTimer == nil {
+						// Delay slightly (300ms) to ensure process doesn't exit immediately on error
+						connectTimer = time.AfterFunc(300*time.Millisecond, func() {
+							if !sess.IsClosed() {
+								onceConnected.Do(func() {
+									if sess.SetConnected() {
+										sm.Notify()
+										if sm.OnConnected != nil {
+											sm.OnConnected(sess.Target, sess.Alias)
+										}
+									}
+								})
+							}
+						})
+					}
+				}
 			}
 		}
 
+		if connectTimer != nil {
+			connectTimer.Stop()
+		}
 		_ = sess.Close()
 		sm.handleSessionExit(sess.ID)
 	}()
@@ -184,14 +234,63 @@ func (sm *SessionManager) FindByTarget(target string) (int, *Session) {
 	return -1, nil
 }
 
+// FindByID returns the session with the specified ID or nil if not found.
+func (sm *SessionManager) FindByID(id string) *Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	for _, s := range sm.sessions {
+		if s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
 // WriteActive sends bytes to the active session's PTY.
 func (sm *SessionManager) WriteActive(data []byte) error {
 	s := sm.GetActive()
 	if s == nil || s.PTY == nil || s.IsClosed() {
 		return nil
 	}
+	// If session is still connecting, typing input indicates interactive session -> mark connected
+	if s.GetState() == SessionStateConnecting {
+		if s.SetConnected() {
+			sm.Notify()
+			if sm.OnConnected != nil {
+				sm.OnConnected(s.Target, s.Alias)
+			}
+		}
+	}
 	_, err := s.PTY.Write(data)
 	return err
+}
+
+// splitIncompleteUTF8 splits data into complete UTF-8 bytes and any trailing incomplete multibyte UTF-8 bytes.
+func splitIncompleteUTF8(b []byte) ([]byte, []byte) {
+	n := len(b)
+	if n == 0 {
+		return b, nil
+	}
+	// Look back up to 3 bytes from the end for a multibyte start byte (>= 0xC0)
+	for i := 1; i <= 3 && i <= n; i++ {
+		lead := b[n-i]
+		if lead >= 0xC0 {
+			var expectedLen int
+			if lead >= 0xF0 {
+				expectedLen = 4
+			} else if lead >= 0xE0 {
+				expectedLen = 3
+			} else {
+				expectedLen = 2
+			}
+			if i < expectedLen {
+				// Incomplete UTF-8 sequence at end of buffer
+				return b[:n-i], b[n-i:]
+			}
+			break
+		}
+	}
+	return b, nil
 }
 
 // ResizeAll resizes all sessions' PTY and VT emulators.
@@ -268,6 +367,7 @@ func (sm *SessionManager) InjectMockSessionForTest(id, alias, target string) *Se
 		ID:     id,
 		Alias:  alias,
 		Target: target,
+		State:  SessionStateConnected,
 		VT:     vt.New(vt.WithSize(80, 24)),
 	}
 	sm.sessions = append(sm.sessions, s)

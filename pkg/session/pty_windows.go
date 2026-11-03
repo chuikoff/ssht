@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/UserExistsError/conpty"
+	"golang.org/x/sys/windows"
 )
 
 type windowsPTY struct {
@@ -39,11 +40,15 @@ func (w *windowsPTY) Resize(cols, rows int) error {
 	return w.cpty.Resize(cols, rows)
 }
 
-// StartPTY spawns a process inside a Windows ConPTY pseudoconsole.
+// StartPTY spawns a process inside a Windows ConPTY pseudoconsole with UTF-8 encoding.
 func StartPTY(command string, args []string, cols, rows int) (PTYDevice, error) {
 	if !conpty.IsConPtyAvailable() {
 		return nil, fmt.Errorf("Windows ConPTY is not available on this system")
 	}
+
+	// Ensure caller process console is configured for UTF-8
+	_ = windows.SetConsoleCP(65001)
+	_ = windows.SetConsoleOutputCP(65001)
 
 	cmdLine := command
 	if len(args) > 0 {
@@ -59,14 +64,31 @@ func StartPTY(command string, args []string, cols, rows int) (PTYDevice, error) 
 		}
 	}
 
+	// Wrap in cmd.exe /c "chcp 65001 >nul & ..." so ConPTY's inner console explicitly switches to UTF-8
+	cmdLine = fmt.Sprintf("cmd.exe /c \"chcp 65001 >nul & %s\"", cmdLine)
+
 	env := os.Environ()
-	// Ensure TERM is set so SSH and remote tools render full 256color ANSI
-	env = append(env, "TERM=xterm-256color")
+	// Filter out any existing conflicting LANG/LC_* from Windows env
+	var filteredEnv []string
+	for _, e := range env {
+		u := strings.ToUpper(e)
+		if !strings.HasPrefix(u, "LANG=") &&
+			!strings.HasPrefix(u, "LC_") &&
+			!strings.HasPrefix(u, "TERM=") {
+			filteredEnv = append(filteredEnv, e)
+		}
+	}
+	filteredEnv = append(filteredEnv,
+		"TERM=xterm-256color",
+		"LANG=en_US.UTF-8",
+		"LC_ALL=en_US.UTF-8",
+		"LC_CTYPE=en_US.UTF-8",
+	)
 
 	cpty, err := conpty.Start(
 		cmdLine,
 		conpty.ConPtyDimensions(cols, rows),
-		conpty.ConPtyEnv(env),
+		conpty.ConPtyEnv(filteredEnv),
 	)
 	if err != nil {
 		return nil, err
