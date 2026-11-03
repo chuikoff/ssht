@@ -110,3 +110,50 @@ func TestSessionManagerBasic(t *testing.T) {
 		t.Fatalf("expected Host2 active after Host1 closed")
 	}
 }
+
+func TestSelectionAndExtraction(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(40, 5))
+	vt.Write([]byte("Line 1: Hello World from SSH\r\nLine 2: Server running on Ubuntu"))
+
+	sel := SelectionRange{
+		Active: true,
+		StartX: 8,
+		StartY: 0,
+		EndX:   18,
+		EndY:   0,
+	}
+
+	if !sel.IsSelected(8, 0) || !sel.IsSelected(15, 0) || !sel.IsSelected(18, 0) {
+		t.Errorf("expected cells to be selected")
+	}
+	if sel.IsSelected(7, 0) || sel.IsSelected(19, 0) || sel.IsSelected(10, 1) {
+		t.Errorf("cells outside range should not be selected")
+	}
+
+	text := ExtractSelectedText(vt, sel)
+	if text != "Hello World" {
+		t.Errorf("ExtractSelectedText = %q, want %q", text, "Hello World")
+	}
+
+	// Reverse drag (drag from right to left)
+	revSel := SelectionRange{
+		Active: true,
+		StartX: 18,
+		StartY: 0,
+		EndX:   8,
+		EndY:   0,
+	}
+	if !revSel.IsSelected(10, 0) {
+		t.Errorf("expected cell (10, 0) to be selected in reverse selection")
+	}
+	revText := ExtractSelectedText(vt, revSel)
+	if revText != "Hello World" {
+		t.Errorf("reverse ExtractSelectedText = %q, want %q", revText, "Hello World")
+	}
+
+	// Render with selection contains reverse video code \033[7m
+	rendered := RenderVTWithSelection(vt, sel)
+	if !strings.Contains(rendered, "\033[7m") {
+		t.Errorf("RenderVTWithSelection should contain reverse ANSI code for selection highlight")
+	}
+}

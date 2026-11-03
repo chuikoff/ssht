@@ -259,3 +259,17 @@ func (sm *SessionManager) CloseAll() {
 	sm.activeIdx = 0
 	sm.Notify()
 }
+
+// InjectMockSessionForTest adds a dummy session with virtual terminal for tests.
+func (sm *SessionManager) InjectMockSessionForTest(id, alias, target string) *Session {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	s := &Session{
+		ID:     id,
+		Alias:  alias,
+		Target: target,
+		VT:     vt10x.New(vt10x.WithSize(80, 24)),
+	}
+	sm.sessions = append(sm.sessions, s)
+	return s
+}

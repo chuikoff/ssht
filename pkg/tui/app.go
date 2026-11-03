@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"sshtunnels/pkg/backup"
@@ -80,9 +81,12 @@ type AppModel struct {
 	HelpView    *HelpView
 
 	// Embedded SSH Session & Mode State
-	ViewMode      ViewMode
-	SessionMgr    *session.SessionManager
-	TerminalZones []ButtonZone
+	ViewMode         ViewMode
+	SessionMgr       *session.SessionManager
+	TerminalTopZones []ButtonZone
+	TerminalTabZones []ButtonZone
+	SessionBarZones  []ButtonZone
+	Selection        session.SelectionRange
 
 	// Modal State
 	ActiveModal ModalType
@@ -123,9 +127,11 @@ func NewAppModel(m *tunnel.Manager, meta *sshconfig.MetadataStore) *AppModel {
 		TunnelsView:   tv,
 		HelpView:      help,
 		ActiveModal:   ModalNone,
-		ViewMode:      ViewModeDashboard,
-		SessionMgr:    sm,
-		TerminalZones: []ButtonZone{},
+		ViewMode:         ViewModeDashboard,
+		SessionMgr:       sm,
+		TerminalTopZones: []ButtonZone{},
+		TerminalTabZones: []ButtonZone{},
+		SessionBarZones:  []ButtonZone{},
 	}
 }
 
@@ -296,6 +302,19 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyF1:
 				a.ViewMode = ViewModeDashboard
 				return a, nil
+			case tea.KeyCtrlC:
+				if a.Selection.Active {
+					active := a.SessionMgr.GetActive()
+					if active != nil && active.VT != nil {
+						text := session.ExtractSelectedText(active.VT, a.Selection)
+						if len(text) > 0 {
+							_ = clipboard.WriteAll(text)
+							a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
+						}
+					}
+					a.Selection = session.SelectionRange{}
+					return a, nil
+				}
 			case tea.KeyCtrlW:
 				active := a.SessionMgr.GetActive()
 				if active != nil {
@@ -307,9 +326,11 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			case tea.KeyCtrlPgUp:
 				a.SessionMgr.PrevTab()
+				a.Selection = session.SelectionRange{}
 				return a, nil
 			case tea.KeyCtrlPgDown:
 				a.SessionMgr.NextTab()
+				a.Selection = session.SelectionRange{}
 				return a, nil
 			}
 
@@ -317,17 +338,24 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tabIdx := int(msg.Runes[0] - '1')
 				if tabIdx < a.SessionMgr.Count() {
 					a.SessionMgr.SetActive(tabIdx)
+					a.Selection = session.SelectionRange{}
 				}
 				return a, nil
 			}
 
 			if msg.Alt && msg.Type == tea.KeyLeft {
 				a.SessionMgr.PrevTab()
+				a.Selection = session.SelectionRange{}
 				return a, nil
 			}
 			if msg.Alt && msg.Type == tea.KeyRight {
 				a.SessionMgr.NextTab()
+				a.Selection = session.SelectionRange{}
 				return a, nil
+			}
+
+			if a.Selection.Active {
+				a.Selection = session.SelectionRange{}
 			}
 
 			data := session.KeyToBytes(msg)
@@ -430,60 +458,161 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if a.ViewMode == ViewModeTerminal {
-		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
-			return a, nil
-		}
-
-		// Click on collapsed top bar
-		if msg.Y == 0 {
-			for _, z := range a.TerminalZones {
-				if z.Action == "close_active" && msg.X >= z.StartX && msg.X <= z.EndX {
-					return a.executeFooterAction("close_active")
-				}
+		// Mouse wheel scrolling inside terminal
+		if msg.Button == tea.MouseButtonWheelUp {
+			if msg.Y >= 1 && msg.Y <= a.Height-2 {
+				_ = a.SessionMgr.WriteActive([]byte("\x1b[A\x1b[A\x1b[A"))
+				return a, nil
 			}
-			a.ViewMode = ViewModeDashboard
-			return a, nil
+		} else if msg.Button == tea.MouseButtonWheelDown {
+			if msg.Y >= 1 && msg.Y <= a.Height-2 {
+				_ = a.SessionMgr.WriteActive([]byte("\x1b[B\x1b[B\x1b[B"))
+				return a, nil
+			}
 		}
 
-		// Click on bottom session tabs bar
-		if msg.Y >= a.Height-1 {
-			for _, z := range a.TerminalZones {
-				if msg.X >= z.StartX && msg.X <= z.EndX {
-					if z.Action == "dashboard" {
-						a.ViewMode = ViewModeDashboard
-						return a, nil
-					}
-					if z.Action == "new_session" {
-						a.ViewMode = ViewModeDashboard
-						a.ActiveTab = TabHosts
-						return a, nil
-					}
-					if z.Action == "close_active" {
+		// Click on collapsed top bar (Y == 0)
+		if msg.Y == 0 {
+			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+				for _, z := range a.TerminalTopZones {
+					if z.Action == "close_active" && msg.X >= z.StartX && msg.X <= z.EndX {
 						return a.executeFooterAction("close_active")
 					}
-					if strings.HasPrefix(z.Action, "tab_") {
-						var idx int
-						fmt.Sscanf(z.Action, "tab_%d", &idx)
-						a.SessionMgr.SetActive(idx)
-						return a, nil
-					}
-					if strings.HasPrefix(z.Action, "close_") {
-						var idx int
-						fmt.Sscanf(z.Action, "close_%d", &idx)
-						list := a.SessionMgr.List()
-						if idx >= 0 && idx < len(list) {
-							name := list[idx].Alias
-							a.SessionMgr.Close(list[idx].ID)
-							if a.SessionMgr.Count() == 0 {
-								a.ViewMode = ViewModeDashboard
-							}
-							a.notify(fmt.Sprintf("SSH сессия '%s' отключена", name), false)
+				}
+				a.ViewMode = ViewModeDashboard
+				return a, nil
+			}
+			return a, nil
+		}
+
+		// Click on bottom session tabs bar (Y >= a.Height - 1)
+		if msg.Y >= a.Height-1 {
+			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+				for _, z := range a.TerminalTabZones {
+					if msg.X >= z.StartX && msg.X <= z.EndX {
+						if z.Action == "dashboard" {
+							a.ViewMode = ViewModeDashboard
+							return a, nil
 						}
-						return a, nil
+						if z.Action == "new_session" {
+							a.ViewMode = ViewModeDashboard
+							a.ActiveTab = TabHosts
+							return a, nil
+						}
+						if z.Action == "close_active" {
+							return a.executeFooterAction("close_active")
+						}
+						if strings.HasPrefix(z.Action, "tab_") {
+							var idx int
+							fmt.Sscanf(z.Action, "tab_%d", &idx)
+							// Double-click on tab closes it!
+							if a.LastClick.IsDoubleClick(TabHosts, 2000+idx) {
+								list := a.SessionMgr.List()
+								if idx >= 0 && idx < len(list) {
+									name := list[idx].Alias
+									a.SessionMgr.Close(list[idx].ID)
+									if a.SessionMgr.Count() == 0 {
+										a.ViewMode = ViewModeDashboard
+									}
+									a.notify(fmt.Sprintf("SSH сессия '%s' отключена", name), false)
+								}
+								return a, nil
+							}
+							a.LastClick.Record(TabHosts, 2000+idx)
+							a.SessionMgr.SetActive(idx)
+							a.Selection = session.SelectionRange{}
+							return a, nil
+						}
+						if strings.HasPrefix(z.Action, "close_") {
+							var idx int
+							fmt.Sscanf(z.Action, "close_%d", &idx)
+							list := a.SessionMgr.List()
+							if idx >= 0 && idx < len(list) {
+								name := list[idx].Alias
+								a.SessionMgr.Close(list[idx].ID)
+								if a.SessionMgr.Count() == 0 {
+									a.ViewMode = ViewModeDashboard
+								}
+								a.notify(fmt.Sprintf("SSH сессия '%s' отключена", name), false)
+							}
+							return a, nil
+						}
 					}
 				}
 			}
+			return a, nil
 		}
+
+		// Terminal content area (Y >= 1 && Y <= a.Height - 2)
+		// 1. Right Click: Paste from clipboard into active SSH session
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonRight {
+			active := a.SessionMgr.GetActive()
+			if active != nil {
+				text, err := clipboard.ReadAll()
+				if err == nil && len(text) > 0 {
+					_ = a.SessionMgr.WriteActive([]byte(text))
+					a.notify("✔ Текст вставлен из буфера обмена", false)
+				}
+			}
+			return a, nil
+		}
+
+		// 2. Left Press: Start text selection
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			termY := msg.Y - 1
+			termX := msg.X
+			a.Selection = session.SelectionRange{
+				Active:    true,
+				Selecting: true,
+				StartX:    termX,
+				StartY:    termY,
+				EndX:      termX,
+				EndY:      termY,
+			}
+			return a, nil
+		}
+
+		// 3. Mouse Motion (dragging with left button): Update selection
+		if msg.Action == tea.MouseActionMotion && a.Selection.Selecting {
+			termY := msg.Y - 1
+			if termY < 0 {
+				termY = 0
+			}
+			if termY > a.Height-3 {
+				termY = a.Height - 3
+			}
+			termX := msg.X
+			if termX < 0 {
+				termX = 0
+			}
+			if termX >= a.Width {
+				termX = a.Width - 1
+			}
+			a.Selection.EndX = termX
+			a.Selection.EndY = termY
+			a.Selection.Active = true
+			return a, nil
+		}
+
+		// 4. Mouse Release: Finish selection and copy to clipboard
+		if msg.Action == tea.MouseActionRelease && a.Selection.Selecting {
+			a.Selection.Selecting = false
+			if a.Selection.StartX == a.Selection.EndX && a.Selection.StartY == a.Selection.EndY {
+				// Single click without drag: clear selection
+				a.Selection.Active = false
+			} else {
+				active := a.SessionMgr.GetActive()
+				if active != nil && active.VT != nil {
+					text := session.ExtractSelectedText(active.VT, a.Selection)
+					if len(strings.TrimSpace(text)) > 0 {
+						_ = clipboard.WriteAll(text)
+						a.notify("✔ Выделенный текст скопирован в буфер обмена", false)
+					}
+				}
+			}
+			return a, nil
+		}
+
 		return a, nil
 	}
 
@@ -625,8 +754,25 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// 3. Click on Footer Buttons (Y >= a.Height - 2)
-	if msg.Y >= a.Height-2 && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	// 3. Click on Dashboard Session Bar (Y == a.Height - 2 when sessions are active)
+	if a.SessionMgr.Count() > 0 && msg.Y == a.Height-2 && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		for _, z := range a.SessionBarZones {
+			if msg.X >= z.StartX && msg.X <= z.EndX {
+				if z.Action == "goto_terminal" {
+					a.ViewMode = ViewModeTerminal
+					return a, nil
+				}
+				return a.executeFooterAction(z.Action)
+			}
+		}
+	}
+
+	// 4. Click on Footer Buttons (Y == a.Height - 1, or Y >= a.Height - 2 if no sessions active)
+	isFooterRow := msg.Y >= a.Height-1
+	if a.SessionMgr.Count() == 0 {
+		isFooterRow = msg.Y >= a.Height-2
+	}
+	if isFooterRow && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		for _, z := range a.FooterZones {
 			if msg.X >= z.StartX && msg.X <= z.EndX {
 				return a.executeFooterAction(z.Action)
@@ -1222,14 +1368,15 @@ func (a *AppModel) View() string {
 		active := a.SessionMgr.GetActive()
 		var termContent string
 		if active != nil {
-			termContent = session.RenderVT(active.VT)
+			termContent = session.RenderVTWithSelection(active.VT, a.Selection)
 		} else {
 			termContent = "\n  Нет активных SSH сессий. Нажмите F1 для перехода в Дашборд."
 		}
 
 		headerLine, topZones := a.renderCollapsedHeader(width)
 		footerLine, bottomZones := a.renderTerminalTabs(width)
-		a.TerminalZones = append(topZones, bottomZones...)
+		a.TerminalTopZones = topZones
+		a.TerminalTabZones = bottomZones
 
 		termHeight := height - 2
 		if termHeight < 5 {
@@ -1389,9 +1536,10 @@ func (a *AppModel) View() string {
 	var mainView string
 	if a.SessionMgr.Count() > 0 {
 		sessionBarLine, sessionZones := a.renderDashboardSessionBar(width)
-		a.FooterZones = append(a.FooterZones, sessionZones...)
+		a.SessionBarZones = sessionZones
 		mainView = fmt.Sprintf("%s\n%s\n%s\n%s", headerSb.String(), bodyBox, sessionBarLine, footerLine)
 	} else {
+		a.SessionBarZones = nil
 		mainView = fmt.Sprintf("%s\n%s\n%s", headerSb.String(), bodyBox, footerLine)
 	}
 

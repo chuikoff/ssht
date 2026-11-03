@@ -14,8 +14,117 @@ const (
 	attrItalic    = 1 << 4
 )
 
+// SelectionRange represents a highlighted text region inside the terminal.
+type SelectionRange struct {
+	Active    bool
+	Selecting bool
+	StartX    int
+	StartY    int
+	EndX      int
+	EndY      int
+}
+
+// IsSelected returns true if the cell at (x, y) is within the selection range.
+func (s SelectionRange) IsSelected(x, y int) bool {
+	if !s.Active {
+		return false
+	}
+	sy, sx := s.StartY, s.StartX
+	ey, ex := s.EndY, s.EndX
+	if sy > ey || (sy == ey && sx > ex) {
+		sy, ey = ey, sy
+		sx, ex = ex, sx
+	}
+
+	if y < sy || y > ey {
+		return false
+	}
+	if y == sy && y == ey {
+		return x >= sx && x <= ex
+	}
+	if y == sy {
+		return x >= sx
+	}
+	if y == ey {
+		return x <= ex
+	}
+	return true
+}
+
+// ExtractSelectedText extracts the plain text from the virtual terminal within the selection range.
+func ExtractSelectedText(vt vt10x.Terminal, sel SelectionRange) string {
+	if !sel.Active || vt == nil {
+		return ""
+	}
+	vt.Lock()
+	defer vt.Unlock()
+
+	cols, rows := vt.Size()
+	if cols <= 0 || rows <= 0 {
+		return ""
+	}
+
+	sy, sx := sel.StartY, sel.StartX
+	ey, ex := sel.EndY, sel.EndX
+	if sy > ey || (sy == ey && sx > ex) {
+		sy, ey = ey, sy
+		sx, ex = ex, sx
+	}
+
+	if sy < 0 {
+		sy = 0
+	}
+	if ey >= rows {
+		ey = rows - 1
+	}
+	if sy >= rows {
+		return ""
+	}
+
+	var lines []string
+	for y := sy; y <= ey; y++ {
+		startCol := 0
+		if y == sy {
+			startCol = sx
+		}
+		if startCol < 0 {
+			startCol = 0
+		}
+		endCol := cols - 1
+		if y == ey {
+			endCol = ex
+		}
+		if endCol >= cols {
+			endCol = cols - 1
+		}
+		if startCol > endCol {
+			lines = append(lines, "")
+			continue
+		}
+
+		var lineRunes []rune
+		for x := startCol; x <= endCol; x++ {
+			g := vt.Cell(x, y)
+			ch := g.Char
+			if ch == 0 {
+				ch = ' '
+			}
+			lineRunes = append(lineRunes, ch)
+		}
+		lines = append(lines, strings.TrimRight(string(lineRunes), " "))
+	}
+
+	return strings.Join(lines, "\r\n")
+}
+
 // RenderVT converts the current virtual terminal buffer into an ANSI-escaped string.
 func RenderVT(vt vt10x.Terminal) string {
+	return RenderVTWithSelection(vt, SelectionRange{})
+}
+
+// RenderVTWithSelection converts the current virtual terminal buffer into an ANSI-escaped string,
+// highlighting cells that fall within the given SelectionRange.
+func RenderVTWithSelection(vt vt10x.Terminal, sel SelectionRange) string {
 	if vt == nil {
 		return ""
 	}
@@ -35,13 +144,16 @@ func RenderVT(vt vt10x.Terminal) string {
 	var lastFG, lastBG vt10x.Color = vt10x.DefaultFG, vt10x.DefaultBG
 	var lastMode int16 = 0
 	var lastCursor bool = false
+	var lastSel bool = false
 
 	for y := 0; y < rows; y++ {
 		// Find last character on line so we don't pad trailing whitespace with redundant color codes
 		lastCharIdx := -1
 		for x := cols - 1; x >= 0; x-- {
 			g := vt.Cell(x, y)
-			if (g.Char != 0 && g.Char != ' ') || (curVis && cur.Y == y && cur.X == x) {
+			isCursor := curVis && cur.Y == y && cur.X == x
+			isSel := sel.IsSelected(x, y)
+			if (g.Char != 0 && g.Char != ' ') || isCursor || isSel {
 				lastCharIdx = x
 				break
 			}
@@ -51,16 +163,20 @@ func RenderVT(vt vt10x.Terminal) string {
 		for x := 0; x < limit; x++ {
 			g := vt.Cell(x, y)
 			isCursor := curVis && cur.Y == y && cur.X == x
+			isSel := sel.IsSelected(x, y)
 			fg := g.FG
 			bg := g.BG
 			mode := g.Mode
 
-			if fg != lastFG || bg != lastBG || mode != lastMode || isCursor != lastCursor {
+			if fg != lastFG || bg != lastBG || mode != lastMode || isCursor != lastCursor || isSel != lastSel {
 				sb.WriteString("\033[0m")
 
-				if isCursor || (mode&attrReverse != 0) {
+				if isSel {
+					sb.WriteString("\033[7m")
+				} else if isCursor || (mode&attrReverse != 0) {
 					sb.WriteString("\033[7m")
 				}
+
 				if mode&attrBold != 0 {
 					sb.WriteString("\033[1m")
 				}
@@ -71,23 +187,25 @@ func RenderVT(vt vt10x.Terminal) string {
 					sb.WriteString("\033[3m")
 				}
 
-				if fg != vt10x.DefaultFG {
-					if fg < 8 {
-						sb.WriteString(fmt.Sprintf("\033[%dm", 30+fg))
-					} else if fg < 16 {
-						sb.WriteString(fmt.Sprintf("\033[%dm", 90+(fg-8)))
-					} else if fg < 256 {
-						sb.WriteString(fmt.Sprintf("\033[38;5;%dm", fg))
+				if !isSel {
+					if fg != vt10x.DefaultFG {
+						if fg < 8 {
+							sb.WriteString(fmt.Sprintf("\033[%dm", 30+fg))
+						} else if fg < 16 {
+							sb.WriteString(fmt.Sprintf("\033[%dm", 90+(fg-8)))
+						} else if fg < 256 {
+							sb.WriteString(fmt.Sprintf("\033[38;5;%dm", fg))
+						}
 					}
-				}
 
-				if bg != vt10x.DefaultBG {
-					if bg < 8 {
-						sb.WriteString(fmt.Sprintf("\033[%dm", 40+bg))
-					} else if bg < 16 {
-						sb.WriteString(fmt.Sprintf("\033[%dm", 100+(bg-8)))
-					} else if bg < 256 {
-						sb.WriteString(fmt.Sprintf("\033[48;5;%dm", bg))
+					if bg != vt10x.DefaultBG {
+						if bg < 8 {
+							sb.WriteString(fmt.Sprintf("\033[%dm", 40+bg))
+						} else if bg < 16 {
+							sb.WriteString(fmt.Sprintf("\033[%dm", 100+(bg-8)))
+						} else if bg < 256 {
+							sb.WriteString(fmt.Sprintf("\033[48;5;%dm", bg))
+						}
 					}
 				}
 
@@ -95,6 +213,7 @@ func RenderVT(vt vt10x.Terminal) string {
 				lastBG = bg
 				lastMode = mode
 				lastCursor = isCursor
+				lastSel = isSel
 			}
 
 			ch := g.Char
@@ -104,12 +223,13 @@ func RenderVT(vt vt10x.Terminal) string {
 			sb.WriteRune(ch)
 		}
 
-		if lastFG != vt10x.DefaultFG || lastBG != vt10x.DefaultBG || lastMode != 0 || lastCursor {
+		if lastFG != vt10x.DefaultFG || lastBG != vt10x.DefaultBG || lastMode != 0 || lastCursor || lastSel {
 			sb.WriteString("\033[0m")
 			lastFG = vt10x.DefaultFG
 			lastBG = vt10x.DefaultBG
 			lastMode = 0
 			lastCursor = false
+			lastSel = false
 		}
 
 		if y < rows-1 {

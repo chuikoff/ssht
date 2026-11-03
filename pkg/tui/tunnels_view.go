@@ -82,14 +82,16 @@ func (v *TunnelsView) HandleMouse(msg tea.MouseMsg) (int, bool) {
 	if msg.Action == tea.MouseActionPress {
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			if v.SelectedIndex > 0 {
-				v.SelectedIndex--
+			v.SelectedIndex -= 3
+			if v.SelectedIndex < 0 {
+				v.SelectedIndex = 0
 			}
 			return v.SelectedIndex, false
 
 		case tea.MouseButtonWheelDown:
-			if v.SelectedIndex < len(v.Filtered)-1 {
-				v.SelectedIndex++
+			v.SelectedIndex += 3
+			if v.SelectedIndex >= len(v.Filtered) {
+				v.SelectedIndex = len(v.Filtered) - 1
 			}
 			return v.SelectedIndex, false
 
