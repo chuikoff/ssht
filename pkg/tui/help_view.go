@@ -135,10 +135,11 @@ func buildHelpContent(width int) string {
 	add("  " + keyStyle.Render("[F1] / Клик вверху") + descStyle.Render("Свернуть / Развернуть полный дашборд SSHT во время работы в терминале"))
 	add("  " + keyStyle.Render("[Alt+1..9]        ") + descStyle.Render("Мгновенное переключение между открытыми SSH сессиями (вкладками)"))
 	add("  " + keyStyle.Render("[Alt+← / Alt+→]   ") + descStyle.Render("Переход к предыдущей / следующей открытой SSH вкладке"))
-	add("  " + keyStyle.Render("[Ctrl+W] / exit   ") + descStyle.Render("Закрыть текущую SSH вкладку / отключить сессию"))
+	add("  " + keyStyle.Render("[Ctrl+W] / exit   ") + descStyle.Render("Закрыть текущую вкладку и немедленно разорвать SSH соединение"))
 	add("  " + keyStyle.Render("[O] (Shift+o)     ") + descStyle.Render("Запустить подключение во внешнем системном терминале"))
+	add("  " + exampleStyle.Render("• Индикаторы:     ") + descStyle.Render("  🟢 — соединение активно; 🔴 — соединение разорвано/отключено"))
+	add("  " + exampleStyle.Render("• Кнопка [✕]:     ") + descStyle.Render("  Клик по [✕] на вкладке или [✕ Закрыть SSH] мгновенно завершает ssh.exe"))
 	add("  " + exampleStyle.Render("• Вкладки внизу:  ") + descStyle.Render("  Кликните по любой вкладке внизу экрана для быстрого переключения"))
-	add("  " + exampleStyle.Render("• Кнопка [×]:     ") + descStyle.Render("  Кликните по крестику на вкладке для закрытия сессии"))
 	add("")
 
 	// Section 3: Mouse

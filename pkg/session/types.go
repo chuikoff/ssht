@@ -48,6 +48,13 @@ func (s *Session) IsClosed() bool {
 	return s.Closed
 }
 
+// IsConnected checks if session is alive and connected.
+func (s *Session) IsConnected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.Closed
+}
+
 // KeyToBytes converts a Bubble Tea KeyMsg to raw bytes suitable for PTY input.
 func KeyToBytes(k tea.KeyMsg) []byte {
 	// Standard ASCII control keys (0..31 and 127)

@@ -434,8 +434,13 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		// Click on collapsed top bar -> expand dashboard
+		// Click on collapsed top bar
 		if msg.Y == 0 {
+			for _, z := range a.TerminalZones {
+				if z.Action == "close_active" && msg.X >= z.StartX && msg.X <= z.EndX {
+					return a.executeFooterAction("close_active")
+				}
+			}
 			a.ViewMode = ViewModeDashboard
 			return a, nil
 		}
@@ -453,6 +458,9 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 						a.ActiveTab = TabHosts
 						return a, nil
 					}
+					if z.Action == "close_active" {
+						return a.executeFooterAction("close_active")
+					}
 					if strings.HasPrefix(z.Action, "tab_") {
 						var idx int
 						fmt.Sscanf(z.Action, "tab_%d", &idx)
@@ -464,10 +472,12 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 						fmt.Sscanf(z.Action, "close_%d", &idx)
 						list := a.SessionMgr.List()
 						if idx >= 0 && idx < len(list) {
+							name := list[idx].Alias
 							a.SessionMgr.Close(list[idx].ID)
 							if a.SessionMgr.Count() == 0 {
 								a.ViewMode = ViewModeDashboard
 							}
+							a.notify(fmt.Sprintf("SSH сессия '%s' отключена", name), false)
 						}
 						return a, nil
 					}
@@ -673,15 +683,28 @@ func (a *AppModel) executeFooterAction(action string) (tea.Model, tea.Cmd) {
 		fmt.Sscanf(action, "close_session_%d", &idx)
 		list := a.SessionMgr.List()
 		if idx >= 0 && idx < len(list) {
+			name := list[idx].Alias
 			a.SessionMgr.Close(list[idx].ID)
 			if a.SessionMgr.Count() == 0 {
 				a.ViewMode = ViewModeDashboard
 			}
+			a.notify(fmt.Sprintf("SSH сессия '%s' отключена", name), false)
 		}
 		return a, nil
 	}
 
 	switch action {
+	case "close_active":
+		active := a.SessionMgr.GetActive()
+		if active != nil {
+			name := active.Alias
+			a.SessionMgr.Close(active.ID)
+			if a.SessionMgr.Count() == 0 {
+				a.ViewMode = ViewModeDashboard
+			}
+			a.notify(fmt.Sprintf("SSH сессия '%s' отключена", name), false)
+		}
+		return a, nil
 	case "connect":
 		selected := a.HostsView.SelectedHost()
 		if selected != nil {
@@ -1447,57 +1470,80 @@ func (a *AppModel) connectExternalHost(host *sshconfig.HostConfig) tea.Cmd {
 }
 
 func (a *AppModel) renderCollapsedHeader(width int) (string, []ButtonZone) {
-	var sb strings.Builder
 	var zones []ButtonZone
 
-	appPart := AppTitleStyle.Render(fmt.Sprintf("▲ SSHT v%s", version.Current))
-	sb.WriteString(appPart)
-	sb.WriteString(" ")
-	curX := utf8.RuneCountInString(fmt.Sprintf("▲ SSHT v%s", version.Current)) + 1
+	appTitle := fmt.Sprintf("▲ SSHT v%s", version.Current)
+	appPart := AppTitleStyle.Render(appTitle)
+	plainLeft := appTitle + " "
 
+	var hostPart string
 	active := a.SessionMgr.GetActive()
 	if active != nil {
+		statusText := "🟢 В сети"
+		statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e")).Bold(true)
+		if active.IsClosed() {
+			statusText = "🔴 Отключен"
+			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444")).Bold(true)
+		}
 		hostStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#38bdf8")).Bold(true)
-		hostPart := hostStyle.Render(fmt.Sprintf("● %s (%s)", active.Alias, active.Target))
-		sb.WriteString(hostPart)
-		sb.WriteString("   ")
-		curX += utf8.RuneCountInString(fmt.Sprintf("● %s (%s)", active.Alias, active.Target)) + 3
+		hostPart = fmt.Sprintf(" │ %s: %s (%s)", statusStyle.Render(statusText), hostStyle.Render(active.Alias), active.Target)
+		plainLeft += fmt.Sprintf(" │ %s: %s (%s)", statusText, active.Alias, active.Target)
 	}
 
 	actTun := a.Manager.ActiveCount()
+	var tunPart string
 	if actTun > 0 {
-		tunPart := ActiveCountBadge.Render(fmt.Sprintf("● %d Тонн.", actTun))
-		sb.WriteString(tunPart)
-		sb.WriteString("   ")
-		curX += utf8.RuneCountInString(fmt.Sprintf("● %d Тонн.", actTun)) + 3
+		tunBadge := fmt.Sprintf("● %d Тонн.", actTun)
+		tunPart = "  " + ActiveCountBadge.Render(tunBadge)
+		plainLeft += "  " + tunBadge
 	}
 
-	expandText := "[▲ F1: Развернуть Дашборд]"
-	expandStyle := lipgloss.NewStyle().
+	leftRendered := appPart + hostPart + tunPart
+
+	dashBtnText := " [▲ F1 Дашборд] "
+	dashBtn := lipgloss.NewStyle().
 		Background(lipgloss.Color("#1e293b")).
 		Foreground(lipgloss.Color("#f59e0b")).
-		Bold(true)
+		Bold(true).
+		Render(dashBtnText)
 
-	renderedExpand := expandStyle.Render(expandText)
-	expandWidth := utf8.RuneCountInString(expandText)
+	closeBtnText := " [✕ Закрыть SSH] "
+	closeBtn := lipgloss.NewStyle().
+		Background(lipgloss.Color("#7f1d1d")).
+		Foreground(lipgloss.Color("#fecaca")).
+		Bold(true).
+		Render(closeBtnText)
 
-	remaining := width - curX - expandWidth - 1
-	if remaining > 0 {
-		sb.WriteString(strings.Repeat(" ", remaining))
-		curX += remaining
+	rightRendered := dashBtn + " " + closeBtn
+	plainRight := dashBtnText + " " + closeBtnText
+
+	leftLen := utf8.RuneCountInString(plainLeft)
+	rightLen := utf8.RuneCountInString(plainRight)
+	gap := width - leftLen - rightLen
+	if gap < 1 {
+		gap = 1
 	}
+
+	dashStartX := leftLen + gap
+	dashEndX := dashStartX + utf8.RuneCountInString(dashBtnText)
+	closeStartX := dashEndX + 1
+	closeEndX := width
 
 	zones = append(zones, ButtonZone{
 		StartX: 0,
-		EndX:   width,
+		EndX:   dashEndX,
 		Action: "dashboard",
 	})
-	sb.WriteString(renderedExpand)
+	zones = append(zones, ButtonZone{
+		StartX: closeStartX,
+		EndX:   closeEndX,
+		Action: "close_active",
+	})
 
+	line := leftRendered + strings.Repeat(" ", gap) + rightRendered
 	topBar := lipgloss.NewStyle().
 		Background(lipgloss.Color("#0f172a")).
-		Width(width).
-		Render(sb.String())
+		Render(line)
 
 	return topBar, zones
 }
@@ -1507,6 +1553,7 @@ func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
 	var zones []ButtonZone
 	curX := 0
 
+	// 1. Dashboard toggle button
 	dashText := " [F1 Дашборд] "
 	dashLen := utf8.RuneCountInString(dashText)
 	dashStyle := lipgloss.NewStyle().
@@ -1524,25 +1571,26 @@ func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
 	sb.WriteString(" ")
 	curX++
 
+	// 2. Open SSH sessions
 	sessions := a.SessionMgr.List()
 	activeIdx := a.SessionMgr.ActiveIndex()
 
 	for i, s := range sessions {
 		isActive := (i == activeIdx)
-		statusDot := "●"
+
+		statusIcon := "🟢"
 		if s.IsClosed() {
-			statusDot = "○"
+			statusIcon = "🔴"
 		}
 
-		tabTitle := fmt.Sprintf(" %d: %s %s ", i+1, s.Alias, statusDot)
+		tabTitle := fmt.Sprintf(" %d: %s %s ", i+1, s.Alias, statusIcon)
 		titleLen := utf8.RuneCountInString(tabTitle)
-		closeText := "× "
+		closeText := "[✕] "
 		closeLen := utf8.RuneCountInString(closeText)
 
-		var style lipgloss.Style
-		var closeStyle lipgloss.Style
+		var titleStyle, closeStyle lipgloss.Style
 		if isActive {
-			style = lipgloss.NewStyle().
+			titleStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#0284c7")).
 				Foreground(lipgloss.Color("#ffffff")).
 				Bold(true)
@@ -1551,22 +1599,25 @@ func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
 				Foreground(lipgloss.Color("#fca5a5")).
 				Bold(true)
 		} else {
-			style = lipgloss.NewStyle().
+			titleStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#1e293b")).
 				Foreground(lipgloss.Color("#94a3b8"))
 			closeStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#1e293b")).
-				Foreground(lipgloss.Color("#ef4444"))
+				Foreground(lipgloss.Color("#ef4444")).
+				Bold(true)
 		}
 
+		// Zone for switching to tab
 		zones = append(zones, ButtonZone{
 			StartX: curX,
 			EndX:   curX + titleLen,
 			Action: fmt.Sprintf("tab_%d", i),
 		})
-		sb.WriteString(style.Render(tabTitle))
+		sb.WriteString(titleStyle.Render(tabTitle))
 		curX += titleLen
 
+		// Zone for closing this specific tab & terminating its SSH process
 		zones = append(zones, ButtonZone{
 			StartX: curX,
 			EndX:   curX + closeLen,
@@ -1579,6 +1630,7 @@ func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
 		curX++
 	}
 
+	// 3. [+ Новое] button
 	newText := " [+ Новое] "
 	newLen := utf8.RuneCountInString(newText)
 	newStyle := lipgloss.NewStyle().
@@ -1593,7 +1645,26 @@ func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
 	sb.WriteString(newStyle.Render(newText))
 	curX += newLen
 
-	hintText := " [Alt+1..9: Вкладки] [Ctrl+W: Закрыть] "
+	sb.WriteString(" ")
+	curX++
+
+	// 4. Dedicated active tab close button: [✕ Закрыть SSH (Ctrl+W)]
+	closeActiveText := " [✕ Закрыть SSH (Ctrl+W)] "
+	closeActiveLen := utf8.RuneCountInString(closeActiveText)
+	closeActiveStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#7f1d1d")).
+		Foreground(lipgloss.Color("#fecaca")).
+		Bold(true)
+	zones = append(zones, ButtonZone{
+		StartX: curX,
+		EndX:   curX + closeActiveLen,
+		Action: "close_active",
+	})
+	sb.WriteString(closeActiveStyle.Render(closeActiveText))
+	curX += closeActiveLen
+
+	// 5. Fill remaining space and show hotkey hints
+	hintText := " [Alt+1..9: Вкладки] "
 	hintLen := utf8.RuneCountInString(hintText)
 	remaining := width - curX - hintLen
 	if remaining > 0 {
@@ -1607,7 +1678,6 @@ func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
 
 	tabBar := lipgloss.NewStyle().
 		Background(lipgloss.Color("#0f172a")).
-		Width(width).
 		Render(sb.String())
 
 	return tabBar, zones
@@ -1641,11 +1711,11 @@ func (a *AppModel) renderDashboardSessionBar(width int) (string, []ButtonZone) {
 	curX += utf8.RuneCountInString(label)
 
 	for i, s := range a.SessionMgr.List() {
-		statusDot := "●"
+		statusIcon := "🟢"
 		if s.IsClosed() {
-			statusDot = "○"
+			statusIcon = "🔴"
 		}
-		tabText := fmt.Sprintf("[%d: %s %s]", i+1, s.Alias, statusDot)
+		tabText := fmt.Sprintf("[%d: %s %s] ", i+1, s.Alias, statusIcon)
 		tabLen := utf8.RuneCountInString(tabText)
 
 		style := lipgloss.NewStyle().
@@ -1659,13 +1729,27 @@ func (a *AppModel) renderDashboardSessionBar(width int) (string, []ButtonZone) {
 		})
 
 		sb.WriteString(style.Render(tabText))
-		sb.WriteString(" ")
-		curX += tabLen + 1
+		curX += tabLen
 	}
+
+	closeActiveBtn := "[✕ Отключить активный]"
+	closeActiveLen := utf8.RuneCountInString(closeActiveBtn)
+	closeStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#7f1d1d")).
+		Foreground(lipgloss.Color("#fca5a5")).
+		Bold(true)
+
+	sb.WriteString(" ")
+	curX++
+	zones = append(zones, ButtonZone{
+		StartX: curX,
+		EndX:   curX + closeActiveLen,
+		Action: "close_active",
+	})
+	sb.WriteString(closeStyle.Render(closeActiveBtn))
 
 	bar := lipgloss.NewStyle().
 		Background(lipgloss.Color("#0f172a")).
-		Width(width).
 		Render(sb.String())
 
 	return bar, zones

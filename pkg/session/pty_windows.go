@@ -24,6 +24,14 @@ func (w *windowsPTY) Write(p []byte) (int, error) {
 }
 
 func (w *windowsPTY) Close() error {
+	pid := w.cpty.Pid()
+	if pid > 0 {
+		// Force kill process tree immediately to guarantee SSH session disconnection
+		_ = exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/T", "/F").Run()
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	}
 	return w.cpty.Close()
 }
 

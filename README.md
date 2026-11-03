@@ -5,7 +5,7 @@
 ![Language](https://img.shields.io/badge/Language-Go%201.27-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-success.svg)
 ![UI](https://img.shields.io/badge/TUI-Bubble%20Tea%20%2F%20Lipgloss-purple.svg)
-![Release](https://img.shields.io/badge/Release-v1.3.0-blue.svg)
+![Release](https://img.shields.io/badge/Release-v1.3.1-blue.svg)
 
 ---
 
