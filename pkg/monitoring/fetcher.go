@@ -32,7 +32,7 @@ func FetchMetrics(host string, timeout time.Duration) (*ServerMetrics, error) {
 	cmd := exec.CommandContext(ctx, "ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=5",
-		"-o", "StrictHostKeyChecking=accept-new",
+		"--",
 		host,
 		probeScript,
 	)

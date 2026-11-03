@@ -56,7 +56,7 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 		rows = 24
 	}
 
-	ptyDev, err := StartPTY("ssh", []string{target}, cols, rows)
+	ptyDev, err := StartPTY("ssh", []string{"--", target}, cols, rows)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка запуска SSH PTY: %w", err)
 	}
@@ -279,7 +279,7 @@ func splitIncompleteUTF8(b []byte) ([]byte, []byte) {
 }
 
 // hasSuccessfulConnection returns true if the virtual terminal contains visible text
-// that is NOT an SSH connection error message.
+// indicating an authenticated shell session, and NOT an authentication prompt or connection error.
 func hasSuccessfulConnection(term vt.Terminal) bool {
 	if term == nil {
 		return false
@@ -288,10 +288,11 @@ func hasSuccessfulConnection(term vt.Terminal) bool {
 	defer term.Unlock()
 
 	cols, rows := term.Size()
-	var sb strings.Builder
+	var lines []string
 	hasNonSpace := false
 
 	for y := 0; y < rows; y++ {
+		var lineSb strings.Builder
 		lineHasChar := false
 		for x := 0; x < cols; x++ {
 			ch := term.Cell(x, y).Char
@@ -299,32 +300,68 @@ func hasSuccessfulConnection(term vt.Terminal) bool {
 				hasNonSpace = true
 				lineHasChar = true
 			}
-			if lineHasChar {
-				if ch == 0 {
-					sb.WriteRune(' ')
-				} else {
-					sb.WriteRune(ch)
-				}
+			if ch == 0 {
+				lineSb.WriteRune(' ')
+			} else {
+				lineSb.WriteRune(ch)
 			}
 		}
 		if lineHasChar {
-			sb.WriteRune('\n')
+			lines = append(lines, strings.TrimRight(lineSb.String(), " "))
 		}
 	}
 
-	if !hasNonSpace {
+	if !hasNonSpace || len(lines) == 0 {
 		return false
 	}
 
-	text := strings.ToLower(sb.String())
-	if strings.Contains(text, "connection timed out") ||
-		strings.Contains(text, "connection refused") ||
-		strings.Contains(text, "no route to host") ||
-		strings.Contains(text, "could not resolve hostname") ||
-		strings.Contains(text, "network is unreachable") ||
-		strings.Contains(text, "host key verification failed") ||
-		strings.Contains(text, "permission denied") {
+	fullText := strings.ToLower(strings.Join(lines, "\n"))
+
+	// Check fatal SSH connection errors
+	if strings.Contains(fullText, "connection timed out") ||
+		strings.Contains(fullText, "connection refused") ||
+		strings.Contains(fullText, "no route to host") ||
+		strings.Contains(fullText, "could not resolve hostname") ||
+		strings.Contains(fullText, "network is unreachable") ||
+		strings.Contains(fullText, "host key verification failed") ||
+		strings.Contains(fullText, "permission denied") ||
+		strings.Contains(fullText, "kex_exchange_identification") ||
+		strings.Contains(fullText, "connection closed by remote") ||
+		strings.Contains(fullText, "connection reset by peer") {
 		return false
+	}
+
+	// Check for pending authentication prompts or host key confirmation questions.
+	// While the terminal is waiting for a password/passphrase/confirmation, connection is not yet authenticated.
+	authPrompts := []string{
+		"password:",
+		"password for",
+		"passphrase",
+		"verification code:",
+		"one-time password",
+		"authenticator code:",
+		"(yes/no/[fingerprint])?",
+		"(yes/no)?",
+	}
+
+	lastLine := strings.ToLower(strings.TrimSpace(lines[len(lines)-1]))
+	for _, p := range authPrompts {
+		if strings.Contains(lastLine, p) {
+			return false
+		}
+	}
+
+	// If any line asks for credentials and no actual shell login banner has appeared yet, stay in Connecting
+	for _, l := range lines {
+		lower := strings.ToLower(l)
+		for _, p := range authPrompts {
+			if strings.Contains(lower, p) && !strings.Contains(fullText, "last login") {
+				trimmed := strings.TrimSpace(lower)
+				if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "?") {
+					return false
+				}
+			}
+		}
 	}
 
 	return true

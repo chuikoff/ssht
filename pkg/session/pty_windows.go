@@ -56,19 +56,16 @@ func StartPTY(command string, args []string, cols, rows int) (PTYDevice, error) 
 	_ = windows.SetConsoleCP(65001)
 	_ = windows.SetConsoleOutputCP(65001)
 
-	cmdLine := command
-	if len(args) > 0 {
-		cmdLine = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
+	exe := command
+	if lp, err := exec.LookPath(command); err == nil {
+		exe = lp
 	}
 
-	// Resolve executable path if possible
-	if lp, err := exec.LookPath(command); err == nil {
-		if len(args) > 0 {
-			cmdLine = fmt.Sprintf("\"%s\" %s", lp, strings.Join(args, " "))
-		} else {
-			cmdLine = fmt.Sprintf("\"%s\"", lp)
-		}
+	cmdElements := []string{windows.EscapeArg(exe)}
+	for _, a := range args {
+		cmdElements = append(cmdElements, windows.EscapeArg(a))
 	}
+	cmdLine := strings.Join(cmdElements, " ")
 
 	env := os.Environ()
 	// Filter out any existing conflicting LANG/LC_* from Windows env

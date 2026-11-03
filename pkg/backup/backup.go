@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"sshtunnels/pkg/sshconfig"
@@ -108,6 +109,10 @@ func Import(sourcePath string, tm *tunnel.Manager, ms *sshconfig.MetadataStore, 
 		var newTunnels []*tunnel.Tunnel
 		seen := make(map[string]bool)
 		for _, t := range pkg.Tunnels {
+			if strings.ContainsAny(t.Host, "\r\n") || strings.ContainsAny(t.Name, "\r\n") ||
+				strings.ContainsAny(t.RemoteHost, "\r\n") || strings.ContainsAny(t.BindAddress, "\r\n") {
+				continue
+			}
 			if t.ID != "" && seen[t.ID] {
 				continue
 			}
@@ -127,6 +132,10 @@ func Import(sourcePath string, tm *tunnel.Manager, ms *sshconfig.MetadataStore, 
 			tunnelMap[t.ID] = true
 		}
 		for _, t := range pkg.Tunnels {
+			if strings.ContainsAny(t.Host, "\r\n") || strings.ContainsAny(t.Name, "\r\n") ||
+				strings.ContainsAny(t.RemoteHost, "\r\n") || strings.ContainsAny(t.BindAddress, "\r\n") {
+				continue
+			}
 			if !tunnelMap[t.ID] {
 				t.Status = tunnel.StatusInactive
 				t.PID = 0
@@ -140,6 +149,9 @@ func Import(sourcePath string, tm *tunnel.Manager, ms *sshconfig.MetadataStore, 
 	// 2. Restore Hosts Metadata
 	ms.DataLock()
 	for k, v := range pkg.HostsMetadata {
+		if strings.ContainsAny(k, "\r\n") {
+			continue
+		}
 		if overwrite {
 			ms.Data[k] = v
 			result.MetaImported++
@@ -163,6 +175,21 @@ func Import(sourcePath string, tm *tunnel.Manager, ms *sshconfig.MetadataStore, 
 	}
 
 	for _, bh := range pkg.HostsConfig {
+		// Reject wildcard patterns (e.g. Host *) from being imported as server hosts
+		if bh.IsWildcardHost() {
+			continue
+		}
+		// Reject CRLF injection in any field
+		if err := sshconfig.ValidateHostConfig(bh); err != nil {
+			continue
+		}
+		// Strip dangerous directives to prevent arbitrary code execution on import
+		for optKey := range bh.Options {
+			if sshconfig.IsDangerousOption(optKey) {
+				delete(bh.Options, optKey)
+			}
+		}
+
 		isNew := false
 		for _, a := range bh.Aliases {
 			if !knownAliases[a] {

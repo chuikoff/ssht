@@ -290,10 +290,17 @@ func TestHasSuccessfulConnection(t *testing.T) {
 		t.Fatalf("expected hasSuccessfulConnection == true for valid shell output")
 	}
 
-	// 5. Terminal with password prompt
+	// 5. Terminal with password prompt: MUST be false (still waiting for authentication)
 	termPass := vt.New(vt.WithSize(80, 24))
 	termPass.Write([]byte("root@192.168.88.91's password: "))
-	if !hasSuccessfulConnection(termPass) {
-		t.Fatalf("expected hasSuccessfulConnection == true for password prompt")
+	if hasSuccessfulConnection(termPass) {
+		t.Fatalf("expected hasSuccessfulConnection == false for pending password prompt")
+	}
+
+	// 6. Terminal after successful password entry
+	termAuthed := vt.New(vt.WithSize(80, 24))
+	termAuthed.Write([]byte("root@192.168.88.91's password: \r\nLast login: Mon Nov 3 12:00:00 2026\r\nroot@host:~# "))
+	if !hasSuccessfulConnection(termAuthed) {
+		t.Fatalf("expected hasSuccessfulConnection == true after successful authentication")
 	}
 }

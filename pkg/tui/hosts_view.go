@@ -307,6 +307,8 @@ func (v *HostsView) View(width, height int) string {
 				statusStr = HostOfflineStyle.Render("✖ ОФФЛАЙН")
 			case sshconfig.StatusChecking:
 				statusStr = HostCheckingStyle.Render("◐ ПИНГ...")
+			case sshconfig.StatusProxy:
+				statusStr = lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7D7")).Bold(true).Render("⚡ JUMP")
 			}
 		}
 

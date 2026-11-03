@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HostConfig represents an SSH host entry parsed from ~/.ssh/config.
@@ -76,6 +77,20 @@ func isIP(s string) bool {
 	return true
 }
 
+// HasProxyJump reports whether the host uses ProxyJump or ProxyCommand.
+func (h *HostConfig) HasProxyJump() bool {
+	if h.Options == nil {
+		return false
+	}
+	for k, v := range h.Options {
+		lk := strings.ToLower(k)
+		if (lk == "proxyjump" || lk == "proxycommand") && strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // GetConfigPath returns the absolute path to ~/.ssh/config.
 func GetConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -105,6 +120,24 @@ func LoadSSHConfig() ([]*HostConfig, error) {
 	return parseConfigReader(file)
 }
 
+// IsWildcardAlias reports whether an alias string contains wildcard glob characters (*, ?).
+func IsWildcardAlias(alias string) bool {
+	return strings.ContainsAny(alias, "*?")
+}
+
+// IsWildcardHost reports whether all aliases of the host are wildcard patterns.
+func (h *HostConfig) IsWildcardHost() bool {
+	if len(h.Aliases) == 0 {
+		return true
+	}
+	for _, a := range h.Aliases {
+		if !IsWildcardAlias(a) {
+			return false
+		}
+	}
+	return true
+}
+
 func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 	var hosts []*HostConfig
 	var current *HostConfig
@@ -128,9 +161,21 @@ func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 
 		key := strings.ToLower(fields[0])
 
+		if key == "match" {
+			if current != nil {
+				if !current.IsWildcardHost() {
+					hosts = append(hosts, current)
+				}
+				current = nil
+			}
+			continue
+		}
+
 		if key == "host" {
 			if current != nil {
-				hosts = append(hosts, current)
+				if !current.IsWildcardHost() {
+					hosts = append(hosts, current)
+				}
 			}
 			current = &HostConfig{
 				Aliases:  fields[1:],
@@ -142,7 +187,7 @@ func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 		}
 
 		if current == nil {
-			// Lines before first Host block
+			// Directives before first Host block or inside Match block
 			continue
 		}
 
@@ -173,7 +218,7 @@ func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 		}
 	}
 
-	if current != nil {
+	if current != nil && !current.IsWildcardHost() {
 		hosts = append(hosts, current)
 	}
 
@@ -184,26 +229,154 @@ func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 	return hosts, nil
 }
 
-// AppendHost appends a new host entry to ~/.ssh/config.
-func AppendHost(host *HostConfig) error {
-	path, err := GetConfigPath()
-	if err != nil {
+// DangerousDirectives contains directives that could lead to arbitrary execution or unexpected inclusion.
+var DangerousDirectives = map[string]bool{
+	"proxycommand":       true,
+	"localcommand":       true,
+	"remotecommand":      true,
+	"permitlocalcommand": true,
+	"include":            true,
+	"match":              true,
+}
+
+// IsDangerousOption checks whether an SSH directive key is risky.
+func IsDangerousOption(key string) bool {
+	return DangerousDirectives[strings.ToLower(strings.TrimSpace(key))]
+}
+
+// sanitizeSSHValue ensures a field contains no CRLF / newline characters.
+func sanitizeSSHValue(field, val string) error {
+	if strings.ContainsAny(val, "\r\n") {
+		return fmt.Errorf("field %s contains illegal newline characters: %q", field, val)
+	}
+	return nil
+}
+
+// ValidateHostConfig validates host structure and checks against CRLF injection.
+func ValidateHostConfig(host *HostConfig) error {
+	if host == nil {
+		return fmt.Errorf("host config is nil")
+	}
+	if len(host.Aliases) == 0 {
+		return fmt.Errorf("host aliases cannot be empty")
+	}
+	for _, a := range host.Aliases {
+		if err := sanitizeSSHValue("alias", a); err != nil {
+			return err
+		}
+	}
+	if err := sanitizeSSHValue("HostName", host.HostName); err != nil {
 		return err
 	}
+	if err := sanitizeSSHValue("User", host.User); err != nil {
+		return err
+	}
+	if err := sanitizeSSHValue("IdentityFile", host.IdentityFile); err != nil {
+		return err
+	}
+	for k, v := range host.Options {
+		if err := sanitizeSSHValue("option key", k); err != nil {
+			return err
+		}
+		if err := sanitizeSSHValue("option value", v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	// Ensure ~/.ssh directory exists
+// WriteAtomic writes data to a temporary file and atomically renames it.
+func WriteAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	tmpFile := fmt.Sprintf("%s.tmp.%d.%d", path, os.Getpid(), time.Now().UnixNano())
+	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
+		return err
+	}
+
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpFile)
+		return err
+	}
+
+	if err := os.Rename(tmpFile, path); err != nil {
+		_ = os.Remove(path)
+		if err := os.Rename(tmpFile, path); err != nil {
+			_ = os.Remove(tmpFile)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// backupConfigFile safely saves a backup of existing config without destroying previous backups.
+func backupConfigFile(path string, content []byte) {
+	if len(content) == 0 {
+		return
+	}
+	// Always keep a primary .bak if not already there
+	bakPath := path + ".bak"
+	if _, err := os.Stat(bakPath); os.IsNotExist(err) {
+		_ = os.WriteFile(bakPath, content, 0600)
+	}
+	// Also keep a timestamped backup
+	timeBak := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
+	_ = os.WriteFile(timeBak, content, 0600)
+}
+
+// AppendHost appends a new host entry to ~/.ssh/config.
+func AppendHost(host *HostConfig) error {
+	if host.IsWildcardHost() {
+		return fmt.Errorf("wildcard hosts (e.g. Host *) cannot be added as individual servers")
+	}
+
+	if err := ValidateHostConfig(host); err != nil {
+		return err
+	}
+
+	// Reject dangerous options
+	for k := range host.Options {
+		if IsDangerousOption(k) {
+			return fmt.Errorf("directive %q is not permitted for security reasons", k)
+		}
+	}
+
+	path, err := GetConfigPath()
+	if err != nil {
+		return err
+	}
+
+	var existing []byte
+	if content, err := os.ReadFile(path); err == nil {
+		existing = content
+	}
+
+	backupConfigFile(path, existing)
 
 	var sb strings.Builder
+	if len(existing) > 0 {
+		sb.Write(existing)
+		if !strings.HasSuffix(string(existing), "\n") {
+			sb.WriteString("\n")
+		}
+	}
 	sb.WriteString("\n")
 	sb.WriteString(fmt.Sprintf("Host %s\n", strings.Join(host.Aliases, " ")))
 	if host.HostName != "" {
@@ -222,8 +395,7 @@ func AppendHost(host *HostConfig) error {
 		sb.WriteString(fmt.Sprintf("  %s %s\n", k, v))
 	}
 
-	_, err = f.WriteString(sb.String())
-	return err
+	return WriteAtomic(path, []byte(sb.String()), 0600)
 }
 
 // UpdateHostAlias renames/adds an alias to an existing host in ~/.ssh/config.
@@ -231,6 +403,9 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 	newAlias = strings.TrimSpace(newAlias)
 	if newAlias == "" {
 		return fmt.Errorf("alias cannot be empty")
+	}
+	if err := sanitizeSSHValue("alias", newAlias); err != nil {
+		return err
 	}
 
 	path, err := GetConfigPath()
@@ -247,7 +422,6 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 	var newLines []string
 	matched := false
 
-	// Target matching: matches if any alias matches or first line matches
 	targetMatch := func(line string) bool {
 		trimmed := strings.TrimSpace(line)
 		fields := strings.Fields(trimmed)
@@ -269,7 +443,6 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 	for _, line := range lines {
 		if !matched && targetMatch(line) {
 			matched = true
-			// Build new aliases list with newAlias at front without keeping redundant IP alias
 			var newAliases []string
 			newAliases = append(newAliases, newAlias)
 			for _, a := range target.Aliases {
@@ -289,6 +462,17 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 			}
 
 			newLines = append(newLines, fmt.Sprintf("%sHost %s", indent, strings.Join(newAliases, " ")))
+
+			// If target host had no explicit HostName directive, its original alias (e.g. IP) served as destination.
+			// When renaming, inject explicit "HostName <old-target>" so the connection IP/address is never lost!
+			if target.HostName == "" && len(target.Aliases) > 0 {
+				oldTarget := target.Aliases[0]
+				if oldTarget != newAlias {
+					newLines = append(newLines, fmt.Sprintf("%s  HostName %s", indent, oldTarget))
+					target.HostName = oldTarget
+				}
+			}
+
 			target.Aliases = newAliases
 		} else {
 			newLines = append(newLines, line)
@@ -299,12 +483,10 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 		return fmt.Errorf("host not found in config")
 	}
 
-	// Backup existing config
-	_ = os.WriteFile(path+".bak", content, 0600)
+	backupConfigFile(path, content)
 
-	// Write updated file
 	output := strings.Join(newLines, "\n")
-	return os.WriteFile(path, []byte(output), 0600)
+	return WriteAtomic(path, []byte(output), 0600)
 }
 
 // DeleteHost removes a host entry and its directives from ~/.ssh/config.
@@ -332,9 +514,6 @@ func DeleteHost(target *HostConfig) error {
 		}
 		currAliases := fields[1:]
 		if len(currAliases) != len(target.Aliases) {
-			if len(target.Aliases) > 0 && len(currAliases) > 0 && currAliases[0] == target.Aliases[0] {
-				return true
-			}
 			return false
 		}
 		for i, a := range currAliases {
@@ -349,13 +528,18 @@ func DeleteHost(target *HostConfig) error {
 		trimmed := strings.TrimSpace(line)
 		fields := strings.Fields(trimmed)
 
-		if len(fields) >= 2 && strings.ToLower(fields[0]) == "host" {
-			if !deleted && targetMatch(line) {
-				inTargetBlock = true
-				deleted = true
-				continue
-			} else {
-				inTargetBlock = false
+		// Check if a new section starts (Host OR Match)
+		if len(fields) >= 1 {
+			secKey := strings.ToLower(fields[0])
+			if secKey == "host" || secKey == "match" {
+				if inTargetBlock {
+					inTargetBlock = false
+				}
+				if secKey == "host" && !deleted && targetMatch(line) {
+					inTargetBlock = true
+					deleted = true
+					continue
+				}
 			}
 		}
 
@@ -370,10 +554,9 @@ func DeleteHost(target *HostConfig) error {
 		return fmt.Errorf("host not found in config")
 	}
 
-	// Backup existing config
-	_ = os.WriteFile(path+".bak", content, 0600)
+	backupConfigFile(path, content)
 
 	output := strings.Join(newLines, "\n")
-	return os.WriteFile(path, []byte(output), 0600)
+	return WriteAtomic(path, []byte(output), 0600)
 }
 

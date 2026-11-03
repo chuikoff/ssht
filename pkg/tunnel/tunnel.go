@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -194,7 +195,12 @@ func (s *TunnelStore) Load() ([]*Tunnel, error) {
 
 	var tunnels []*Tunnel
 	if err := json.Unmarshal(data, &tunnels); err != nil {
-		return nil, err
+		if len(strings.TrimSpace(string(data))) > 0 {
+			corruptPath := fmt.Sprintf("%s.corrupt.%d", s.filePath, time.Now().Unix())
+			_ = os.WriteFile(corruptPath, data, 0600)
+			return nil, fmt.Errorf("tunnels configuration file is corrupted (backup saved to %s): %w", corruptPath, err)
+		}
+		return []*Tunnel{}, nil
 	}
 
 	var unique []*Tunnel
@@ -230,5 +236,10 @@ func (s *TunnelStore) Save(tunnels []*Tunnel) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.filePath, data, 0600)
+	tmpFile := fmt.Sprintf("%s.tmp.%d", s.filePath, time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+		return err
+	}
+	_ = os.Remove(s.filePath)
+	return os.Rename(tmpFile, s.filePath)
 }

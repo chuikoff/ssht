@@ -2,11 +2,13 @@ package sshconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +21,7 @@ const (
 	StatusChecking HostStatus = "CHECKING"
 	StatusOnline   HostStatus = "ONLINE"
 	StatusOffline  HostStatus = "OFFLINE"
+	StatusProxy    HostStatus = "PROXY"
 )
 
 // HostMeta holds persistent and runtime metadata for an SSH host.
@@ -88,10 +91,15 @@ func (s *MetadataStore) Load() error {
 	if err != nil {
 		return err
 	}
+	if len(strings.TrimSpace(string(bytes))) == 0 {
+		return nil
+	}
 
 	var data map[string]*HostMeta
 	if err := json.Unmarshal(bytes, &data); err != nil {
-		return err
+		corruptPath := fmt.Sprintf("%s.corrupt.%d", s.filePath, time.Now().Unix())
+		_ = os.WriteFile(corruptPath, bytes, 0600)
+		return fmt.Errorf("metadata file corrupted (backup saved to %s): %w", corruptPath, err)
 	}
 	s.Data = data
 	return nil
@@ -105,7 +113,7 @@ func (s *MetadataStore) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.filePath, bytes, 0600)
+	return WriteAtomic(s.filePath, bytes, 0600)
 }
 
 func (s *MetadataStore) Get(key string) *HostMeta {
@@ -268,6 +276,10 @@ func FormatLastConnected(t *time.Time) string {
 
 // PingHost tests TCP connectivity to the SSH host.
 func PingHost(h *HostConfig, timeout time.Duration) (bool, int64, error) {
+	if h.HasProxyJump() {
+		return false, 0, errors.New("PROXY_JUMP")
+	}
+
 	target := h.HostName
 	if target == "" && len(h.Aliases) > 0 {
 		target = h.Aliases[0]

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestTunnelSpecs(t *testing.T) {
@@ -93,5 +94,57 @@ func TestTunnelStore(t *testing.T) {
 	}
 	if len(loaded) != 1 || loaded[0].Name != "Test Tunnel" {
 		t.Fatalf("Loaded unexpected data: %+v", loaded)
+	}
+}
+
+func TestRunningTracker(t *testing.T) {
+	tmpDir := t.TempDir()
+	runPath := filepath.Join(tmpDir, "running.json")
+	tracker := NewRunningTrackerWithPath(runPath)
+
+	// Set running with current process PID (which is alive!)
+	currentPid := os.Getpid()
+	tracker.SetRunning("t1", currentPid, time.Now())
+
+	records := tracker.Load()
+	if rec, ok := records["t1"]; !ok || rec.PID != currentPid {
+		t.Fatalf("Expected t1 to be recorded with PID %d, got %+v", currentPid, records)
+	}
+
+	// Set running with an invalid/dead PID (e.g. 99999999)
+	tracker.SetRunning("t2", 99999999, time.Now())
+	records = tracker.Load()
+	if _, ok := records["t2"]; ok {
+		t.Fatalf("Dead PID should have been cleaned up automatically by Load")
+	}
+
+	// Remove t1
+	tracker.Remove("t1")
+	records = tracker.Load()
+	if len(records) != 0 {
+		t.Fatalf("Expected 0 records after Remove, got %d", len(records))
+	}
+}
+
+func TestGetLogNoDeadlock(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewTunnelStoreWithPath(filepath.Join(tmpDir, "tunnels.json"))
+	mgr, err := NewManagerWithStore(store)
+	if err != nil {
+		t.Fatalf("NewManagerWithStore failed: %v", err)
+	}
+	defer mgr.Close()
+
+	tun := &Tunnel{
+		ID:        "test1",
+		Name:      "Test",
+		LastError: "Some error occurred",
+	}
+	_ = mgr.AddTunnel(tun)
+
+	// This must not deadlock (previously called FindTunnel inside RLock)
+	log := mgr.GetLog("test1")
+	if log != "Some error occurred" {
+		t.Errorf("Expected 'Some error occurred', got %q", log)
 	}
 }

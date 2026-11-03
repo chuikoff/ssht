@@ -36,9 +36,10 @@ type Session struct {
 	StartedAt    time.Time
 	ConnectedAt  time.Time
 	ExitCode     int
-	State        SessionState
-	Closed       bool
-	mu           sync.Mutex
+	State             SessionState
+	Closed            bool
+	connectedReported bool
+	mu                sync.Mutex
 }
 
 // Close terminates the session and its underlying PTY device.
@@ -87,6 +88,17 @@ func (s *Session) SetConnected() bool {
 	s.State = SessionStateConnected
 	s.ConnectedAt = time.Now()
 	return true
+}
+
+// ReportConnected returns true the first time it is called after the session enters Connected state.
+func (s *Session) ReportConnected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State == SessionStateConnected && !s.connectedReported {
+		s.connectedReported = true
+		return true
+	}
+	return false
 }
 
 // StatusIcon returns a visual status badge icon ("🟡", "🟢", "🔴").

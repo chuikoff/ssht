@@ -47,12 +47,25 @@ const (
 	ModalExport
 	ModalImport
 	ModalMonitor
+	ModalConfirmDelete
 )
 
 type tickMsg time.Time
 type sshExitedMsg struct{ err error }
 type sessionOutputMsg struct{}
 type sessionClosedMsg struct{ id string }
+type tunnelStartResultMsg struct {
+	id   string
+	name string
+	err  error
+}
+
+func startTunnelCmd(mgr *tunnel.Manager, id, name string) tea.Cmd {
+	return func() tea.Msg {
+		err := mgr.StartTunnel(id)
+		return tunnelStartResultMsg{id: id, name: name, err: err}
+	}
+}
 type monitorMetricsMsg struct {
 	Metrics *monitoring.ServerMetrics
 	Err     error
@@ -98,6 +111,7 @@ type AppModel struct {
 	ExportModal  *ExportModal
 	ImportModal  *ImportModal
 	MonitorModal *MonitorModal
+	ConfirmModal *ConfirmDeleteModal
 
 	// Mouse Zones & State
 	TabZones    []ButtonZone
@@ -133,11 +147,6 @@ func NewAppModel(m *tunnel.Manager, meta *sshconfig.MetadataStore) *AppModel {
 		TerminalTopZones: []ButtonZone{},
 		TerminalTabZones: []ButtonZone{},
 		SessionBarZones:  []ButtonZone{},
-	}
-
-	sm.OnConnected = func(target, alias string) {
-		meta.RecordConnection(target)
-		app.notify(fmt.Sprintf("✔ Терминал подключен к '%s'", alias), false)
 	}
 
 	return app
@@ -220,7 +229,11 @@ func (a *AppModel) checkAllHostsCmd() tea.Cmd {
 			if res.Online {
 				status = sshconfig.StatusOnline
 			} else if res.Err != nil {
-				errMsg = res.Err.Error()
+				if res.Err.Error() == "PROXY_JUMP" {
+					status = sshconfig.StatusProxy
+				} else {
+					errMsg = res.Err.Error()
+				}
 			}
 			a.MetaStore.SetStatus(res.Key, status, res.LatencyMs, errMsg)
 		}
@@ -240,7 +253,22 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tunnelStartResultMsg:
+		if msg.err != nil {
+			a.notify(fmt.Sprintf("Ошибка запуска тоннеля '%s': %v", msg.name, msg.err), true)
+		} else {
+			a.notify(fmt.Sprintf("✔ Тоннель '%s' успешно запущен", msg.name), false)
+		}
+		a.TunnelsView.ApplyFilter()
+		return a, nil
+
 	case sessionOutputMsg:
+		for _, s := range a.SessionMgr.List() {
+			if s.ReportConnected() {
+				a.MetaStore.RecordConnection(s.Target)
+				a.notify(fmt.Sprintf("✔ Терминал подключен к '%s'", s.Alias), false)
+			}
+		}
 		return a, a.waitForSessionActivity()
 
 	case sessionClosedMsg:
@@ -295,7 +323,11 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Online {
 			status = sshconfig.StatusOnline
 		} else if msg.Err != nil {
-			errMsg = msg.Err.Error()
+			if msg.Err.Error() == "PROXY_JUMP" {
+				status = sshconfig.StatusProxy
+			} else {
+				errMsg = msg.Err.Error()
+			}
 		}
 		a.MetaStore.SetStatus(msg.Key, status, msg.LatencyMs, errMsg)
 		return a, nil
@@ -862,6 +894,35 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return a, fetchMetricsCmd(a.MonitorModal.Alias)
 			}
 			return a, nil
+
+		case ModalConfirmDelete:
+			if a.ConfirmModal != nil {
+				confirmed, closed := a.ConfirmModal.HandleMouse(msg, a.Width, a.Height)
+				if closed {
+					if confirmed {
+						if a.ConfirmModal.IsTunnel {
+							name := a.ConfirmModal.TunnelName
+							if err := a.Manager.DeleteTunnel(a.ConfirmModal.TunnelID); err != nil {
+								a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
+							} else {
+								a.notify(fmt.Sprintf("Тоннель '%s' удален", name), false)
+							}
+							a.TunnelsView.ApplyFilter()
+						} else if a.ConfirmModal.HostTarget != nil {
+							name := a.ConfirmModal.HostTarget.DisplayName()
+							if err := sshconfig.DeleteHost(a.ConfirmModal.HostTarget); err != nil {
+								a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
+							} else {
+								a.notify(fmt.Sprintf("Хост '%s' удален из ~/.ssh/config", name), false)
+								_ = a.HostsView.Reload()
+							}
+						}
+					}
+					a.ActiveModal = ModalNone
+					a.ConfirmModal = nil
+				}
+			}
+			return a, nil
 		}
 		return a, nil
 	}
@@ -1185,13 +1246,12 @@ func (a *AppModel) handleHostsTab(msg tea.Msg) tea.Cmd {
 		case "d":
 			selected := a.HostsView.SelectedHost()
 			if selected != nil {
-				name := selected.DisplayName()
-				if err := sshconfig.DeleteHost(selected); err != nil {
-					a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
-				} else {
-					a.notify(fmt.Sprintf("Хост '%s' удален из ~/.ssh/config", name), false)
-					_ = a.HostsView.Reload()
+				a.ConfirmModal = &ConfirmDeleteModal{
+					Title:      "УДАЛЕНИЕ ХОСТА",
+					Prompt:     fmt.Sprintf("Удалить хост '%s' из ~/.ssh/config?", selected.DisplayName()),
+					HostTarget: selected,
 				}
+				a.ActiveModal = ModalConfirmDelete
 			}
 			return nil
 		case "z":
@@ -1261,16 +1321,18 @@ func (a *AppModel) handleTunnelsTab(msg tea.Msg) tea.Cmd {
 		case " ", "enter":
 			selected := a.TunnelsView.SelectedTunnel()
 			if selected != nil {
-				if err := a.Manager.ToggleTunnel(selected.ID); err != nil {
-					a.notify(fmt.Sprintf("Ошибка переключения '%s': %v", selected.Name, err), true)
-				} else {
-					if selected.Status == tunnel.StatusActive {
-						a.notify(fmt.Sprintf("Тоннель '%s' запущен на порту %d", selected.Name, selected.LocalPort), false)
+				if selected.Status == tunnel.StatusActive || selected.Status == tunnel.StatusStarting {
+					if err := a.Manager.StopTunnel(selected.ID); err != nil {
+						a.notify(fmt.Sprintf("Ошибка остановки: %v", err), true)
 					} else {
 						a.notify(fmt.Sprintf("Тоннель '%s' остановлен", selected.Name), false)
 					}
+					a.TunnelsView.ApplyFilter()
+					return nil
+				} else {
+					a.notify(fmt.Sprintf("Запуск тоннеля '%s'...", selected.Name), false)
+					return startTunnelCmd(a.Manager, selected.ID, selected.Name)
 				}
-				a.TunnelsView.ApplyFilter()
 			}
 			return nil
 
@@ -1298,13 +1360,14 @@ func (a *AppModel) handleTunnelsTab(msg tea.Msg) tea.Cmd {
 		case "d":
 			selected := a.TunnelsView.SelectedTunnel()
 			if selected != nil {
-				name := selected.Name
-				if err := a.Manager.DeleteTunnel(selected.ID); err != nil {
-					a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
-				} else {
-					a.notify(fmt.Sprintf("Тоннель '%s' удален", name), false)
+				a.ConfirmModal = &ConfirmDeleteModal{
+					Title:      "УДАЛЕНИЕ ТОННЕЛЯ",
+					Prompt:     fmt.Sprintf("Удалить тоннель '%s'?", selected.Name),
+					IsTunnel:   true,
+					TunnelID:   selected.ID,
+					TunnelName: selected.Name,
 				}
-				a.TunnelsView.ApplyFilter()
+				a.ActiveModal = ModalConfirmDelete
 			}
 			return nil
 
@@ -1470,6 +1533,42 @@ func (a *AppModel) handleModalKey(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.MonitorModal.Loading = true
 					return a, fetchMetricsCmd(a.MonitorModal.Alias)
 				}
+			}
+		}
+		return a, nil
+
+	case ModalConfirmDelete:
+		if a.ConfirmModal == nil {
+			a.ActiveModal = ModalNone
+			return a, nil
+		}
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			switch keyMsg.String() {
+			case "y", "Y", "enter":
+				if a.ConfirmModal.IsTunnel {
+					name := a.ConfirmModal.TunnelName
+					if err := a.Manager.DeleteTunnel(a.ConfirmModal.TunnelID); err != nil {
+						a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
+					} else {
+						a.notify(fmt.Sprintf("Тоннель '%s' удален", name), false)
+					}
+					a.TunnelsView.ApplyFilter()
+				} else if a.ConfirmModal.HostTarget != nil {
+					name := a.ConfirmModal.HostTarget.DisplayName()
+					if err := sshconfig.DeleteHost(a.ConfirmModal.HostTarget); err != nil {
+						a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
+					} else {
+						a.notify(fmt.Sprintf("Хост '%s' удален из ~/.ssh/config", name), false)
+						_ = a.HostsView.Reload()
+					}
+				}
+				a.ActiveModal = ModalNone
+				a.ConfirmModal = nil
+				return a, nil
+			case "n", "N", "esc", "q":
+				a.ActiveModal = ModalNone
+				a.ConfirmModal = nil
+				return a, nil
 			}
 		}
 		return a, nil
@@ -1689,6 +1788,10 @@ func (a *AppModel) View() string {
 			modalView = a.ImportModal.View()
 		case ModalMonitor:
 			modalView = a.MonitorModal.View()
+		case ModalConfirmDelete:
+			if a.ConfirmModal != nil {
+				modalView = a.ConfirmModal.View()
+			}
 		}
 
 		return placeOverlay(modalView, mainView, width, height)
@@ -1739,7 +1842,7 @@ func (a *AppModel) connectExternalHost(host *sshconfig.HostConfig) tea.Cmd {
 	}
 	target := host.PrimaryAlias()
 	a.MetaStore.RecordConnection(target)
-	c := exec.Command("ssh", target)
+	c := exec.Command("ssh", "--", target)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return sshExitedMsg{err: err}
 	})
