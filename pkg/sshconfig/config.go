@@ -21,27 +21,14 @@ type HostConfig struct {
 	RawLines     []string          // Original lines for faithful preservation
 }
 
-// DisplayName returns the primary identifier for display.
+// DisplayName returns the primary identifier for display without redundant IPs.
 func (h *HostConfig) DisplayName() string {
-	if len(h.Aliases) > 1 {
-		var custom string
-		var ip string
-		for _, a := range h.Aliases {
-			if !isIP(a) && custom == "" {
-				custom = a
-			} else if isIP(a) && ip == "" {
-				ip = a
-			}
+	for _, a := range h.Aliases {
+		if !isIP(a) {
+			return a
 		}
-		if custom != "" && ip != "" {
-			return fmt.Sprintf("%s (%s)", custom, ip)
-		}
-		if custom != "" {
-			return custom
-		}
-		return strings.Join(h.Aliases, ", ")
 	}
-	if len(h.Aliases) == 1 {
+	if len(h.Aliases) > 0 {
 		return h.Aliases[0]
 	}
 	if h.HostName != "" {
@@ -65,6 +52,11 @@ func (h *HostConfig) CustomName() string {
 
 // PrimaryAlias returns the main alias to pass to `ssh <alias>`.
 func (h *HostConfig) PrimaryAlias() string {
+	for _, a := range h.Aliases {
+		if !isIP(a) {
+			return a
+		}
+	}
 	if len(h.Aliases) > 0 {
 		return h.Aliases[0]
 	}
@@ -277,11 +269,11 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 	for _, line := range lines {
 		if !matched && targetMatch(line) {
 			matched = true
-			// Build new aliases list with newAlias at front
+			// Build new aliases list with newAlias at front without keeping redundant IP alias
 			var newAliases []string
 			newAliases = append(newAliases, newAlias)
 			for _, a := range target.Aliases {
-				if a != newAlias {
+				if a != newAlias && !isIP(a) {
 					newAliases = append(newAliases, a)
 				}
 			}
@@ -311,6 +303,76 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 	_ = os.WriteFile(path+".bak", content, 0600)
 
 	// Write updated file
+	output := strings.Join(newLines, "\n")
+	return os.WriteFile(path, []byte(output), 0600)
+}
+
+// DeleteHost removes a host entry and its directives from ~/.ssh/config.
+func DeleteHost(target *HostConfig) error {
+	path, err := GetConfigPath()
+	if err != nil {
+		return err
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(content), "\n")
+	var newLines []string
+	inTargetBlock := false
+	deleted := false
+
+	targetMatch := func(line string) bool {
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+		if len(fields) < 2 || strings.ToLower(fields[0]) != "host" {
+			return false
+		}
+		currAliases := fields[1:]
+		if len(currAliases) != len(target.Aliases) {
+			if len(target.Aliases) > 0 && len(currAliases) > 0 && currAliases[0] == target.Aliases[0] {
+				return true
+			}
+			return false
+		}
+		for i, a := range currAliases {
+			if a != target.Aliases[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+
+		if len(fields) >= 2 && strings.ToLower(fields[0]) == "host" {
+			if !deleted && targetMatch(line) {
+				inTargetBlock = true
+				deleted = true
+				continue
+			} else {
+				inTargetBlock = false
+			}
+		}
+
+		if inTargetBlock {
+			continue
+		}
+
+		newLines = append(newLines, line)
+	}
+
+	if !deleted {
+		return fmt.Errorf("host not found in config")
+	}
+
+	// Backup existing config
+	_ = os.WriteFile(path+".bak", content, 0600)
+
 	output := strings.Join(newLines, "\n")
 	return os.WriteFile(path, []byte(output), 0600)
 }

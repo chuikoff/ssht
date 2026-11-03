@@ -12,9 +12,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"sshtunnels/pkg/backup"
 	"sshtunnels/pkg/monitoring"
+	"sshtunnels/pkg/session"
 	"sshtunnels/pkg/sshconfig"
 	"sshtunnels/pkg/tunnel"
 	"sshtunnels/pkg/version"
+)
+
+type ViewMode int
+
+const (
+	ViewModeDashboard ViewMode = iota
+	ViewModeTerminal
 )
 
 type TabIndex int
@@ -41,6 +49,8 @@ const (
 
 type tickMsg time.Time
 type sshExitedMsg struct{ err error }
+type sessionOutputMsg struct{}
+type sessionClosedMsg struct{ id string }
 type monitorMetricsMsg struct {
 	Metrics *monitoring.ServerMetrics
 	Err     error
@@ -68,6 +78,11 @@ type AppModel struct {
 	HostsView   *HostsView
 	TunnelsView *TunnelsView
 	HelpView    *HelpView
+
+	// Embedded SSH Session & Mode State
+	ViewMode      ViewMode
+	SessionMgr    *session.SessionManager
+	TerminalZones []ButtonZone
 
 	// Modal State
 	ActiveModal ModalType
@@ -98,15 +113,19 @@ func NewAppModel(m *tunnel.Manager, meta *sshconfig.MetadataStore) *AppModel {
 	hv := NewHostsView(meta)
 	tv := NewTunnelsView(m)
 	help := NewHelpView()
+	sm := session.NewSessionManager()
 
 	return &AppModel{
-		Manager:     m,
-		MetaStore:   meta,
-		ActiveTab:   TabHosts,
-		HostsView:   hv,
-		TunnelsView: tv,
-		HelpView:    help,
-		ActiveModal: ModalNone,
+		Manager:       m,
+		MetaStore:     meta,
+		ActiveTab:     TabHosts,
+		HostsView:     hv,
+		TunnelsView:   tv,
+		HelpView:      help,
+		ActiveModal:   ModalNone,
+		ViewMode:      ViewModeDashboard,
+		SessionMgr:    sm,
+		TerminalZones: []ButtonZone{},
 	}
 }
 
@@ -121,7 +140,22 @@ func (a *AppModel) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
 		tickerCmd(),
+		a.waitForSessionActivity(),
 	)
+}
+
+func (a *AppModel) waitForSessionActivity() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case <-a.SessionMgr.NotifyChan():
+			return sessionOutputMsg{}
+		case id, ok := <-a.SessionMgr.ClosedChan():
+			if !ok {
+				return nil
+			}
+			return sessionClosedMsg{id: id}
+		}
+	}
 }
 
 func tickerCmd() tea.Cmd {
@@ -192,6 +226,17 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case sessionOutputMsg:
+		return a, a.waitForSessionActivity()
+
+	case sessionClosedMsg:
+		a.SessionMgr.Close(msg.id)
+		if a.SessionMgr.Count() == 0 {
+			a.ViewMode = ViewModeDashboard
+		}
+		a.notify("SSH сессия завершена", false)
+		return a, a.waitForSessionActivity()
+
 	case monitorMetricsMsg:
 		if a.MonitorModal != nil {
 			a.MonitorModal.Loading = false
@@ -208,6 +253,11 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.Width = msg.Width
 		a.Height = msg.Height
 		a.Ready = true
+		termHeight := a.Height - 2
+		if termHeight < 5 {
+			termHeight = 5
+		}
+		a.SessionMgr.ResizeAll(a.Width, termHeight)
 		return a, nil
 
 	case tickMsg:
@@ -241,8 +291,69 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.handleMouse(msg)
 
 	case tea.KeyMsg:
+		if a.ViewMode == ViewModeTerminal {
+			switch msg.Type {
+			case tea.KeyF1:
+				a.ViewMode = ViewModeDashboard
+				return a, nil
+			case tea.KeyCtrlW:
+				active := a.SessionMgr.GetActive()
+				if active != nil {
+					a.SessionMgr.Close(active.ID)
+					if a.SessionMgr.Count() == 0 {
+						a.ViewMode = ViewModeDashboard
+					}
+				}
+				return a, nil
+			case tea.KeyCtrlPgUp:
+				a.SessionMgr.PrevTab()
+				return a, nil
+			case tea.KeyCtrlPgDown:
+				a.SessionMgr.NextTab()
+				return a, nil
+			}
+
+			if msg.Alt && len(msg.Runes) == 1 && msg.Runes[0] >= '1' && msg.Runes[0] <= '9' {
+				tabIdx := int(msg.Runes[0] - '1')
+				if tabIdx < a.SessionMgr.Count() {
+					a.SessionMgr.SetActive(tabIdx)
+				}
+				return a, nil
+			}
+
+			if msg.Alt && msg.Type == tea.KeyLeft {
+				a.SessionMgr.PrevTab()
+				return a, nil
+			}
+			if msg.Alt && msg.Type == tea.KeyRight {
+				a.SessionMgr.NextTab()
+				return a, nil
+			}
+
+			data := session.KeyToBytes(msg)
+			if len(data) > 0 {
+				_ = a.SessionMgr.WriteActive(data)
+			}
+			return a, nil
+		}
+
 		if a.ActiveModal != ModalNone {
 			return a.handleModalKey(msg)
+		}
+
+		if a.SessionMgr.Count() > 0 {
+			if msg.Type == tea.KeyF1 {
+				a.ViewMode = ViewModeTerminal
+				return a, nil
+			}
+			if msg.Alt && len(msg.Runes) == 1 && msg.Runes[0] >= '1' && msg.Runes[0] <= '9' {
+				tabIdx := int(msg.Runes[0] - '1')
+				if tabIdx < a.SessionMgr.Count() {
+					a.SessionMgr.SetActive(tabIdx)
+					a.ViewMode = ViewModeTerminal
+					return a, nil
+				}
+			}
 		}
 
 		isFiltering := (a.ActiveTab == TabHosts && a.HostsView.Filtering) ||
@@ -252,6 +363,7 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c", "q":
 				a.Manager.StopAll()
+				a.SessionMgr.CloseAll()
 				return a, tea.Quit
 
 			case "b":
@@ -317,6 +429,54 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if a.ViewMode == ViewModeTerminal {
+		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+			return a, nil
+		}
+
+		// Click on collapsed top bar -> expand dashboard
+		if msg.Y == 0 {
+			a.ViewMode = ViewModeDashboard
+			return a, nil
+		}
+
+		// Click on bottom session tabs bar
+		if msg.Y >= a.Height-1 {
+			for _, z := range a.TerminalZones {
+				if msg.X >= z.StartX && msg.X <= z.EndX {
+					if z.Action == "dashboard" {
+						a.ViewMode = ViewModeDashboard
+						return a, nil
+					}
+					if z.Action == "new_session" {
+						a.ViewMode = ViewModeDashboard
+						a.ActiveTab = TabHosts
+						return a, nil
+					}
+					if strings.HasPrefix(z.Action, "tab_") {
+						var idx int
+						fmt.Sscanf(z.Action, "tab_%d", &idx)
+						a.SessionMgr.SetActive(idx)
+						return a, nil
+					}
+					if strings.HasPrefix(z.Action, "close_") {
+						var idx int
+						fmt.Sscanf(z.Action, "close_%d", &idx)
+						list := a.SessionMgr.List()
+						if idx >= 0 && idx < len(list) {
+							a.SessionMgr.Close(list[idx].ID)
+							if a.SessionMgr.Count() == 0 {
+								a.ViewMode = ViewModeDashboard
+							}
+						}
+						return a, nil
+					}
+				}
+			}
+		}
+		return a, nil
+	}
+
 	// 1. If modal is active, delegate mouse to modal
 	if a.ActiveModal != ModalNone {
 		switch a.ActiveModal {
@@ -455,8 +615,8 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// 3. Click on Footer Buttons (Y == a.Height - 1)
-	if msg.Y == a.Height-1 && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	// 3. Click on Footer Buttons (Y >= a.Height - 2)
+	if msg.Y >= a.Height-2 && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		for _, z := range a.FooterZones {
 			if msg.X >= z.StartX && msg.X <= z.EndX {
 				return a.executeFooterAction(z.Action)
@@ -472,12 +632,7 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if a.LastClick.IsDoubleClick(TabHosts, clickedRow) {
 				selected := a.HostsView.SelectedHost()
 				if selected != nil {
-					target := selected.PrimaryAlias()
-					a.MetaStore.RecordConnection(target)
-					c := exec.Command("ssh", target)
-					return a, tea.ExecProcess(c, func(err error) tea.Msg {
-						return sshExitedMsg{err: err}
-					})
+					return a, a.connectHost(selected)
 				}
 			} else {
 				a.LastClick.Record(TabHosts, clickedRow)
@@ -506,17 +661,40 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *AppModel) executeFooterAction(action string) (tea.Model, tea.Cmd) {
+	if strings.HasPrefix(action, "switch_session_") {
+		var idx int
+		fmt.Sscanf(action, "switch_session_%d", &idx)
+		a.SessionMgr.SetActive(idx)
+		a.ViewMode = ViewModeTerminal
+		return a, nil
+	}
+	if strings.HasPrefix(action, "close_session_") {
+		var idx int
+		fmt.Sscanf(action, "close_session_%d", &idx)
+		list := a.SessionMgr.List()
+		if idx >= 0 && idx < len(list) {
+			a.SessionMgr.Close(list[idx].ID)
+			if a.SessionMgr.Count() == 0 {
+				a.ViewMode = ViewModeDashboard
+			}
+		}
+		return a, nil
+	}
+
 	switch action {
 	case "connect":
 		selected := a.HostsView.SelectedHost()
 		if selected != nil {
-			target := selected.PrimaryAlias()
-			a.MetaStore.RecordConnection(target)
-			c := exec.Command("ssh", target)
-			return a, tea.ExecProcess(c, func(err error) tea.Msg {
-				return sshExitedMsg{err: err}
-			})
+			return a, a.connectHost(selected)
 		}
+	case "connect_external":
+		selected := a.HostsView.SelectedHost()
+		if selected != nil {
+			return a, a.connectExternalHost(selected)
+		}
+	case "goto_terminal":
+		a.ViewMode = ViewModeTerminal
+		return a, nil
 	case "metrics":
 		selected := a.HostsView.SelectedHost()
 		if selected != nil {
@@ -524,6 +702,17 @@ func (a *AppModel) executeFooterAction(action string) (tea.Model, tea.Cmd) {
 			a.MonitorModal = NewMonitorModal(selected.DisplayName(), target)
 			a.ActiveModal = ModalMonitor
 			return a, fetchMetricsCmd(target)
+		}
+	case "delete_host":
+		selected := a.HostsView.SelectedHost()
+		if selected != nil {
+			name := selected.DisplayName()
+			if err := sshconfig.DeleteHost(selected); err != nil {
+				a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
+			} else {
+				a.notify(fmt.Sprintf("Хост '%s' удален из ~/.ssh/config", name), false)
+				_ = a.HostsView.Reload()
+			}
 		}
 	case "toggle_archive":
 		selected := a.HostsView.SelectedHost()
@@ -677,12 +866,12 @@ func (a *AppModel) handleHostsTab(msg tea.Msg) tea.Cmd {
 		case "enter":
 			selected := a.HostsView.SelectedHost()
 			if selected != nil {
-				target := selected.PrimaryAlias()
-				a.MetaStore.RecordConnection(target)
-				c := exec.Command("ssh", target)
-				return tea.ExecProcess(c, func(err error) tea.Msg {
-					return sshExitedMsg{err: err}
-				})
+				return a.connectHost(selected)
+			}
+		case "o", "O":
+			selected := a.HostsView.SelectedHost()
+			if selected != nil {
+				return a.connectExternalHost(selected)
 			}
 		case "p", "c":
 			a.notify("Проверка доступности серверов...", false)
@@ -695,6 +884,18 @@ func (a *AppModel) handleHostsTab(msg tea.Msg) tea.Cmd {
 				a.ActiveModal = ModalMonitor
 				return fetchMetricsCmd(target)
 			}
+		case "d":
+			selected := a.HostsView.SelectedHost()
+			if selected != nil {
+				name := selected.DisplayName()
+				if err := sshconfig.DeleteHost(selected); err != nil {
+					a.notify(fmt.Sprintf("Ошибка удаления: %v", err), true)
+				} else {
+					a.notify(fmt.Sprintf("Хост '%s' удален из ~/.ssh/config", name), false)
+					_ = a.HostsView.Reload()
+				}
+			}
+			return nil
 		case "z":
 			selected := a.HostsView.SelectedHost()
 			if selected != nil {
@@ -993,6 +1194,33 @@ func (a *AppModel) View() string {
 		height = 15
 	}
 
+	// 0. Embedded Terminal View Mode (collapsed app header & bottom session tabs)
+	if a.ViewMode == ViewModeTerminal {
+		active := a.SessionMgr.GetActive()
+		var termContent string
+		if active != nil {
+			termContent = session.RenderVT(active.VT)
+		} else {
+			termContent = "\n  Нет активных SSH сессий. Нажмите F1 для перехода в Дашборд."
+		}
+
+		headerLine, topZones := a.renderCollapsedHeader(width)
+		footerLine, bottomZones := a.renderTerminalTabs(width)
+		a.TerminalZones = append(topZones, bottomZones...)
+
+		termHeight := height - 2
+		if termHeight < 5 {
+			termHeight = 5
+		}
+
+		termBox := lipgloss.NewStyle().
+			Width(width).
+			Height(termHeight).
+			Render(termContent)
+
+		return fmt.Sprintf("%s\n%s\n%s", headerLine, termBox, footerLine)
+	}
+
 	// 1. Header (Title + Version + Active Tunnels Counter + Clickable Tabs)
 	var headerSb strings.Builder
 	titleText := fmt.Sprintf("SSHT v%s", version.Current)
@@ -1068,8 +1296,11 @@ func (a *AppModel) View() string {
 	// 2. Tab Body
 	var body string
 	contentHeight := height - 5
-	if contentHeight < 8 {
-		contentHeight = 8
+	if a.SessionMgr.Count() > 0 {
+		contentHeight = height - 6
+	}
+	if contentHeight < 6 {
+		contentHeight = 6
 	}
 
 	switch a.ActiveTab {
@@ -1094,7 +1325,9 @@ func (a *AppModel) View() string {
 		}
 		btns = []FooterBtn{
 			{Key: "Enter", Label: "Войти", Action: "connect"},
+			{Key: "O", Label: "Внешний", Action: "connect_external"},
 			{Key: "m", Label: "Метрики", Action: "metrics"},
+			{Key: "d", Label: "Удалить", Action: "delete_host"},
 			{Key: "p", Label: "Проверить", Action: "check_all"},
 			{Key: "z", Label: archiveLabel, Action: "toggle_archive"},
 			{Key: "Z", Label: "Фильтр", Action: "cycle_archive_filter"},
@@ -1130,7 +1363,14 @@ func (a *AppModel) View() string {
 	footerLine, footerZones := renderFooter(btns, width)
 	a.FooterZones = footerZones
 
-	mainView := fmt.Sprintf("%s\n%s\n%s", headerSb.String(), bodyBox, footerLine)
+	var mainView string
+	if a.SessionMgr.Count() > 0 {
+		sessionBarLine, sessionZones := a.renderDashboardSessionBar(width)
+		a.FooterZones = append(a.FooterZones, sessionZones...)
+		mainView = fmt.Sprintf("%s\n%s\n%s\n%s", headerSb.String(), bodyBox, sessionBarLine, footerLine)
+	} else {
+		mainView = fmt.Sprintf("%s\n%s\n%s", headerSb.String(), bodyBox, footerLine)
+	}
 
 	if a.ActiveModal != ModalNone {
 		var modalView string
@@ -1155,6 +1395,280 @@ func (a *AppModel) View() string {
 	}
 
 	return mainView
+}
+
+func (a *AppModel) connectHost(host *sshconfig.HostConfig) tea.Cmd {
+	if host == nil {
+		return nil
+	}
+	target := host.PrimaryAlias()
+	displayName := host.DisplayName()
+	a.MetaStore.RecordConnection(target)
+
+	// If already open, switch to it
+	idx, existing := a.SessionMgr.FindByTarget(target)
+	if existing != nil && !existing.IsClosed() {
+		a.SessionMgr.SetActive(idx)
+		a.ViewMode = ViewModeTerminal
+		a.notify(fmt.Sprintf("Переключено на активную сессию '%s'", displayName), false)
+		return nil
+	}
+
+	cols := a.Width
+	if cols < 20 {
+		cols = 80
+	}
+	rows := a.Height - 2
+	if rows < 5 {
+		rows = 24
+	}
+
+	_, err := a.SessionMgr.StartSession(displayName, target, cols, rows)
+	if err != nil {
+		a.notify(fmt.Sprintf("Ошибка запуска терминала: %v", err), true)
+		return nil
+	}
+
+	a.ViewMode = ViewModeTerminal
+	a.notify(fmt.Sprintf("Терминал подключен к '%s'", displayName), false)
+	return nil
+}
+
+func (a *AppModel) connectExternalHost(host *sshconfig.HostConfig) tea.Cmd {
+	if host == nil {
+		return nil
+	}
+	target := host.PrimaryAlias()
+	a.MetaStore.RecordConnection(target)
+	c := exec.Command("ssh", target)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return sshExitedMsg{err: err}
+	})
+}
+
+func (a *AppModel) renderCollapsedHeader(width int) (string, []ButtonZone) {
+	var sb strings.Builder
+	var zones []ButtonZone
+
+	appPart := AppTitleStyle.Render(fmt.Sprintf("▲ SSHT v%s", version.Current))
+	sb.WriteString(appPart)
+	sb.WriteString(" ")
+	curX := utf8.RuneCountInString(fmt.Sprintf("▲ SSHT v%s", version.Current)) + 1
+
+	active := a.SessionMgr.GetActive()
+	if active != nil {
+		hostStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#38bdf8")).Bold(true)
+		hostPart := hostStyle.Render(fmt.Sprintf("● %s (%s)", active.Alias, active.Target))
+		sb.WriteString(hostPart)
+		sb.WriteString("   ")
+		curX += utf8.RuneCountInString(fmt.Sprintf("● %s (%s)", active.Alias, active.Target)) + 3
+	}
+
+	actTun := a.Manager.ActiveCount()
+	if actTun > 0 {
+		tunPart := ActiveCountBadge.Render(fmt.Sprintf("● %d Тонн.", actTun))
+		sb.WriteString(tunPart)
+		sb.WriteString("   ")
+		curX += utf8.RuneCountInString(fmt.Sprintf("● %d Тонн.", actTun)) + 3
+	}
+
+	expandText := "[▲ F1: Развернуть Дашборд]"
+	expandStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#1e293b")).
+		Foreground(lipgloss.Color("#f59e0b")).
+		Bold(true)
+
+	renderedExpand := expandStyle.Render(expandText)
+	expandWidth := utf8.RuneCountInString(expandText)
+
+	remaining := width - curX - expandWidth - 1
+	if remaining > 0 {
+		sb.WriteString(strings.Repeat(" ", remaining))
+		curX += remaining
+	}
+
+	zones = append(zones, ButtonZone{
+		StartX: 0,
+		EndX:   width,
+		Action: "dashboard",
+	})
+	sb.WriteString(renderedExpand)
+
+	topBar := lipgloss.NewStyle().
+		Background(lipgloss.Color("#0f172a")).
+		Width(width).
+		Render(sb.String())
+
+	return topBar, zones
+}
+
+func (a *AppModel) renderTerminalTabs(width int) (string, []ButtonZone) {
+	var sb strings.Builder
+	var zones []ButtonZone
+	curX := 0
+
+	dashText := " [F1 Дашборд] "
+	dashLen := utf8.RuneCountInString(dashText)
+	dashStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#1e293b")).
+		Foreground(lipgloss.Color("#f59e0b")).
+		Bold(true)
+	sb.WriteString(dashStyle.Render(dashText))
+	zones = append(zones, ButtonZone{
+		StartX: curX,
+		EndX:   curX + dashLen,
+		Action: "dashboard",
+	})
+	curX += dashLen
+
+	sb.WriteString(" ")
+	curX++
+
+	sessions := a.SessionMgr.List()
+	activeIdx := a.SessionMgr.ActiveIndex()
+
+	for i, s := range sessions {
+		isActive := (i == activeIdx)
+		statusDot := "●"
+		if s.IsClosed() {
+			statusDot = "○"
+		}
+
+		tabTitle := fmt.Sprintf(" %d: %s %s ", i+1, s.Alias, statusDot)
+		titleLen := utf8.RuneCountInString(tabTitle)
+		closeText := "× "
+		closeLen := utf8.RuneCountInString(closeText)
+
+		var style lipgloss.Style
+		var closeStyle lipgloss.Style
+		if isActive {
+			style = lipgloss.NewStyle().
+				Background(lipgloss.Color("#0284c7")).
+				Foreground(lipgloss.Color("#ffffff")).
+				Bold(true)
+			closeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#0284c7")).
+				Foreground(lipgloss.Color("#fca5a5")).
+				Bold(true)
+		} else {
+			style = lipgloss.NewStyle().
+				Background(lipgloss.Color("#1e293b")).
+				Foreground(lipgloss.Color("#94a3b8"))
+			closeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#1e293b")).
+				Foreground(lipgloss.Color("#ef4444"))
+		}
+
+		zones = append(zones, ButtonZone{
+			StartX: curX,
+			EndX:   curX + titleLen,
+			Action: fmt.Sprintf("tab_%d", i),
+		})
+		sb.WriteString(style.Render(tabTitle))
+		curX += titleLen
+
+		zones = append(zones, ButtonZone{
+			StartX: curX,
+			EndX:   curX + closeLen,
+			Action: fmt.Sprintf("close_%d", i),
+		})
+		sb.WriteString(closeStyle.Render(closeText))
+		curX += closeLen
+
+		sb.WriteString(" ")
+		curX++
+	}
+
+	newText := " [+ Новое] "
+	newLen := utf8.RuneCountInString(newText)
+	newStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#1e293b")).
+		Foreground(lipgloss.Color("#10b981")).
+		Bold(true)
+	zones = append(zones, ButtonZone{
+		StartX: curX,
+		EndX:   curX + newLen,
+		Action: "new_session",
+	})
+	sb.WriteString(newStyle.Render(newText))
+	curX += newLen
+
+	hintText := " [Alt+1..9: Вкладки] [Ctrl+W: Закрыть] "
+	hintLen := utf8.RuneCountInString(hintText)
+	remaining := width - curX - hintLen
+	if remaining > 0 {
+		sb.WriteString(strings.Repeat(" ", remaining))
+	}
+	if remaining >= 0 {
+		hintStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#64748b"))
+		sb.WriteString(hintStyle.Render(hintText))
+	}
+
+	tabBar := lipgloss.NewStyle().
+		Background(lipgloss.Color("#0f172a")).
+		Width(width).
+		Render(sb.String())
+
+	return tabBar, zones
+}
+
+func (a *AppModel) renderDashboardSessionBar(width int) (string, []ButtonZone) {
+	var sb strings.Builder
+	var zones []ButtonZone
+	curX := 1
+
+	termBtn := "[▲ F1: Вернуться в Терминал]"
+	termLen := utf8.RuneCountInString(termBtn)
+	termStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#0284c7")).
+		Foreground(lipgloss.Color("#ffffff")).
+		Bold(true)
+
+	sb.WriteString(termStyle.Render(termBtn))
+	zones = append(zones, ButtonZone{
+		StartX: curX,
+		EndX:   curX + termLen,
+		Action: "goto_terminal",
+	})
+	curX += termLen
+
+	sb.WriteString("  ")
+	curX += 2
+
+	label := "Открытые SSH: "
+	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#94a3b8")).Render(label))
+	curX += utf8.RuneCountInString(label)
+
+	for i, s := range a.SessionMgr.List() {
+		statusDot := "●"
+		if s.IsClosed() {
+			statusDot = "○"
+		}
+		tabText := fmt.Sprintf("[%d: %s %s]", i+1, s.Alias, statusDot)
+		tabLen := utf8.RuneCountInString(tabText)
+
+		style := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#38bdf8")).
+			Bold(true)
+
+		zones = append(zones, ButtonZone{
+			StartX: curX,
+			EndX:   curX + tabLen,
+			Action: fmt.Sprintf("switch_session_%d", i),
+		})
+
+		sb.WriteString(style.Render(tabText))
+		sb.WriteString(" ")
+		curX += tabLen + 1
+	}
+
+	bar := lipgloss.NewStyle().
+		Background(lipgloss.Color("#0f172a")).
+		Width(width).
+		Render(sb.String())
+
+	return bar, zones
 }
 
 func renderFooter(btns []FooterBtn, width int) (string, []ButtonZone) {

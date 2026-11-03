@@ -129,23 +129,37 @@ func buildHelpContent(width int) string {
 	add("  " + keyStyle.Render("[q] / [Ctrl+C]    ") + descStyle.Render("Выход с корректным завершением активных тоннелей"))
 	add("")
 
-	// Section 2: Mouse
-	add(sectionStyle.Render("══ 2. УПРАВЛЕНИЕ МЫШЬЮ ═══════════════════════════════════════════════════"))
+	// Section 2: Embedded Terminal & Tabs
+	add(sectionStyle.Render("══ 2. ВСТРОЕННЫЙ SSH ТЕРМИНАЛ И ВКЛАДКИ ═══════════════════════════════════"))
+	add("  " + keyStyle.Render("[Enter]           ") + descStyle.Render("Подключиться во встроенном терминале (сворачивает дашборд вверх)"))
+	add("  " + keyStyle.Render("[F1] / Клик вверху") + descStyle.Render("Свернуть / Развернуть полный дашборд SSHT во время работы в терминале"))
+	add("  " + keyStyle.Render("[Alt+1..9]        ") + descStyle.Render("Мгновенное переключение между открытыми SSH сессиями (вкладками)"))
+	add("  " + keyStyle.Render("[Alt+← / Alt+→]   ") + descStyle.Render("Переход к предыдущей / следующей открытой SSH вкладке"))
+	add("  " + keyStyle.Render("[Ctrl+W] / exit   ") + descStyle.Render("Закрыть текущую SSH вкладку / отключить сессию"))
+	add("  " + keyStyle.Render("[O] (Shift+o)     ") + descStyle.Render("Запустить подключение во внешнем системном терминале"))
+	add("  " + exampleStyle.Render("• Вкладки внизу:  ") + descStyle.Render("  Кликните по любой вкладке внизу экрана для быстрого переключения"))
+	add("  " + exampleStyle.Render("• Кнопка [×]:     ") + descStyle.Render("  Кликните по крестику на вкладке для закрытия сессии"))
+	add("")
+
+	// Section 3: Mouse
+	add(sectionStyle.Render("══ 3. УПРАВЛЕНИЕ МЫШЬЮ ═══════════════════════════════════════════════════"))
 	add("  " + exampleStyle.Render("• Клик по вкладкам:") + descStyle.Render("  Переключение экранов (1. Подключения / 2. Тоннели / 3. Справка)"))
 	add("  " + exampleStyle.Render("• Колесико мыши:   ") + descStyle.Render("  Плавная прокрутка списков серверов, тоннелей и справки"))
 	add("  " + exampleStyle.Render("• Одиночный клик:  ") + descStyle.Render("  Выбор и подсветка строки в таблице"))
-	add("  " + exampleStyle.Render("• Двойной клик:    ") + descStyle.Render("  Быстрое действие: вход по SSH (на вкладке 1) или Вкл/Выкл (на вкладке 2)"))
+	add("  " + exampleStyle.Render("• Двойной клик:    ") + descStyle.Render("  Быстрое действие: вход во встроенный SSH или Вкл/Выкл тоннеля"))
 	add("  " + exampleStyle.Render("• Кнопки внизу:    ") + descStyle.Render("  Все функциональные кнопки панели действий кликабельны"))
 	add("")
 
-	// Section 3: SSH Connections
-	add(sectionStyle.Render("══ 3. ДЕЙСТВИЯ: SSH ПОДКЛЮЧЕНИЯ ══════════════════════════════════════════"))
-	add("  " + keyStyle.Render("[Enter]           ") + descStyle.Render("Подключиться к серверу (интерактивная SSH-сессия)"))
+	// Section 4: SSH Connections
+	add(sectionStyle.Render("══ 4. ДЕЙСТВИЯ: SSH ПОДКЛЮЧЕНИЯ ══════════════════════════════════════════"))
+	add("  " + keyStyle.Render("[Enter]           ") + descStyle.Render("Подключиться во встроенном терминале (дашборд свернется вверх)"))
+	add("  " + keyStyle.Render("[O] (Shift+o)     ") + descStyle.Render("Подключиться во внешнем окне терминала"))
 	add("  " + keyStyle.Render("[m]               ") + descStyle.Render("Мини-мониторинг сервера: CPU, ОЗУ, Диск, Uptime и Load Average"))
 	add("  " + keyStyle.Render("[p] или [c]       ") + descStyle.Render("Проверить доступность (Ping) серверов параллельно"))
 	add("  " + keyStyle.Render("[z]               ") + descStyle.Render("Отправить в «Отстойник» / Восстановить выбранный сервер"))
 	add("  " + keyStyle.Render("[Z]               ") + descStyle.Render("Сменить фильтр списка: [Активные] / [Отстойник] / [Все]"))
 	add("  " + keyStyle.Render("[n]               ") + descStyle.Render("Переименовать хост (задать удобный псевдоним в ~/.ssh/config)"))
+	add("  " + keyStyle.Render("[d]               ") + descStyle.Render("Удалить выбранный хост из ~/.ssh/config"))
 	add("  " + keyStyle.Render("[a]               ") + descStyle.Render("Добавить новый SSH хост в ~/.ssh/config"))
 	add("  " + keyStyle.Render("[t]               ") + descStyle.Render("Быстро создать тоннель для выбранного сервера"))
 	add("  " + keyStyle.Render("[r]               ") + descStyle.Render("Перечитать конфигурацию ~/.ssh/config с диска"))

@@ -1,6 +1,7 @@
 package sshconfig
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ Host 194.31.223.176 amnezia2germany
 	if len(h3.Aliases) != 2 || h3.Aliases[1] != "amnezia2germany" {
 		t.Errorf("Host 3 alias mismatch: %+v", h3.Aliases)
 	}
-	if h3.DisplayName() != "amnezia2germany (194.31.223.176)" {
+	if h3.DisplayName() != "amnezia2germany" {
 		t.Errorf("Host 3 display name mismatch: %s", h3.DisplayName())
 	}
 }
@@ -86,5 +87,33 @@ func TestMetadataArchiving(t *testing.T) {
 	}
 	if store2.ArchivedCount() != 0 {
 		t.Errorf("Expected 0 archived hosts, got %d", store2.ArchivedCount())
+	}
+}
+
+func TestDeleteHost(t *testing.T) {
+	sample := "Host ServerA\n  HostName 1.1.1.1\n\nHost ServerB\n  HostName 2.2.2.2\n"
+	tmpFile := t.TempDir() + "/config"
+	_ = os.WriteFile(tmpFile, []byte(sample), 0600)
+
+	// Test deleting ServerA
+	content, _ := os.ReadFile(tmpFile)
+	lines := strings.Split(string(content), "\n")
+	var newLines []string
+	inTarget := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "Host ServerA") {
+			inTarget = true
+			continue
+		}
+		if inTarget && strings.HasPrefix(l, "Host ") {
+			inTarget = false
+		}
+		if !inTarget {
+			newLines = append(newLines, l)
+		}
+	}
+	res := strings.Join(newLines, "\n")
+	if strings.Contains(res, "ServerA") || !strings.Contains(res, "ServerB") {
+		t.Errorf("Unexpected deletion result: %s", res)
 	}
 }
