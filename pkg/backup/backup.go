@@ -52,7 +52,10 @@ func Export(targetPath string, tm *tunnel.Manager, ms *sshconfig.MetadataStore) 
 	metaCopy := make(map[string]*sshconfig.HostMeta)
 	for k, v := range ms.Data {
 		metaCopy[k] = &sshconfig.HostMeta{
-			LastConnected: v.LastConnected,
+			LastConnected:  v.LastConnected,
+			Archived:       v.Archived,
+			ArchivedAt:     v.ArchivedAt,
+			ArchivedReason: v.ArchivedReason,
 		}
 	}
 	ms.DataUnlock()

@@ -30,11 +30,11 @@ func main() {
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "-v", "--version":
+		case "-v", "--version", "version":
 			fmt.Printf("SSHT — Терминальный менеджер SSH-подключений и тоннелей v%s\n", version.Current)
 			return
 
-		case "-h", "--help":
+		case "-h", "--help", "help":
 			fmt.Printf("SSHT — Терминальный менеджер SSH-подключений и тоннелей v%s\n", version.Current)
 			fmt.Println("\nИспользование:")
 			fmt.Println("  ssht               Запуск интерактивного TUI-дашборда")

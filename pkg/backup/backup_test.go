@@ -39,6 +39,7 @@ func TestExportAndImport(t *testing.T) {
 
 	metaStore := sshconfig.NewMetadataStoreWithPath(meta1File)
 	metaStore.RecordConnection("test-host")
+	metaStore.SetArchived("test-host", true, "maintenance")
 
 	// Export
 	exportedPath, err := Export(backupFile, manager, metaStore)
@@ -67,6 +68,18 @@ func TestExportAndImport(t *testing.T) {
 	}
 	if res.TunnelsImported != 1 {
 		t.Errorf("Expected 1 tunnel imported, got %d", res.TunnelsImported)
+	}
+
+	// Verify archive state restored
+	restoredMeta := newMetaStore.Get("test-host")
+	if !restoredMeta.Archived {
+		t.Errorf("Expected restored host to be archived")
+	}
+	if restoredMeta.ArchivedReason != "maintenance" {
+		t.Errorf("Expected archived reason 'maintenance', got %q", restoredMeta.ArchivedReason)
+	}
+	if restoredMeta.LastConnected == nil {
+		t.Errorf("Expected LastConnected timestamp to be preserved")
 	}
 
 	// Verify tunnel restored

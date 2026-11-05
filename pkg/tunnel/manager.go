@@ -396,6 +396,12 @@ func (m *Manager) StartTunnel(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.userStopped[t.ID] {
+		t.Status = StatusInactive
+		t.LastError = ""
+		return nil
+	}
+
 	if failed || !isProcessAlive(pid) {
 		t.Status = StatusFailed
 		m.running.Remove(t.ID)

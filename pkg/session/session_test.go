@@ -283,6 +283,18 @@ func TestHasSuccessfulConnection(t *testing.T) {
 		t.Fatalf("expected hasSuccessfulConnection == false for fatal connection error output")
 	}
 
+	termSshError := vt.New(vt.WithSize(80, 24))
+	termSshError.Write([]byte("ssh: Could not resolve hostname evil: No such host is known.\r\n"))
+	if hasSuccessfulConnection(termSshError) {
+		t.Fatalf("expected hasSuccessfulConnection == false for ssh client error")
+	}
+
+	termFatalError := vt.New(vt.WithSize(80, 24))
+	termFatalError.Write([]byte("fatal: unable to negotiate with host 10.0.0.1 port 22\r\n"))
+	if hasSuccessfulConnection(termFatalError) {
+		t.Fatalf("expected hasSuccessfulConnection == false for fatal ssh error")
+	}
+
 	// 4. Terminal with real remote prompt
 	termConnected := vt.New(vt.WithSize(80, 24))
 	termConnected.Write([]byte("Welcome to Ubuntu 26.04\r\nroot@server:~# "))

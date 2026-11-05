@@ -273,12 +273,12 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionClosedMsg:
 		s := a.SessionMgr.FindByID(msg.id)
-		wasConnected := false
-		alias := msg.id
-		if s != nil {
-			wasConnected = s.IsConnected()
-			alias = s.Alias
+		if s == nil {
+			// Session was already closed or cleaned up, ignore duplicate notification
+			return a, a.waitForSessionActivity()
 		}
+		wasConnected := s.IsConnected()
+		alias := s.Alias
 		a.SessionMgr.Close(msg.id)
 		if a.SessionMgr.Count() == 0 {
 			a.ViewMode = ViewModeDashboard
@@ -991,8 +991,18 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if a.LastClick.IsDoubleClick(TabTunnels, clickedRow) {
 				selected := a.TunnelsView.SelectedTunnel()
 				if selected != nil {
-					_ = a.Manager.ToggleTunnel(selected.ID)
-					a.TunnelsView.ApplyFilter()
+					if selected.Status == tunnel.StatusActive || selected.Status == tunnel.StatusStarting {
+						if err := a.Manager.StopTunnel(selected.ID); err != nil {
+							a.notify(fmt.Sprintf("Ошибка остановки: %v", err), true)
+						} else {
+							a.notify(fmt.Sprintf("Тоннель '%s' остановлен", selected.Name), false)
+						}
+						a.TunnelsView.ApplyFilter()
+						return a, nil
+					} else {
+						a.notify(fmt.Sprintf("Запуск тоннеля '%s'...", selected.Name), false)
+						return a, startTunnelCmd(a.Manager, selected.ID, selected.Name)
+					}
 				}
 			} else {
 				a.LastClick.Record(TabTunnels, clickedRow)
@@ -1136,10 +1146,18 @@ func (a *AppModel) executeFooterAction(action string) (tea.Model, tea.Cmd) {
 	case "toggle":
 		selected := a.TunnelsView.SelectedTunnel()
 		if selected != nil {
-			if err := a.Manager.ToggleTunnel(selected.ID); err != nil {
-				a.notify(fmt.Sprintf("Ошибка: %v", err), true)
+			if selected.Status == tunnel.StatusActive || selected.Status == tunnel.StatusStarting {
+				if err := a.Manager.StopTunnel(selected.ID); err != nil {
+					a.notify(fmt.Sprintf("Ошибка остановки: %v", err), true)
+				} else {
+					a.notify(fmt.Sprintf("Тоннель '%s' остановлен", selected.Name), false)
+				}
+				a.TunnelsView.ApplyFilter()
+				return a, nil
+			} else {
+				a.notify(fmt.Sprintf("Запуск тоннеля '%s'...", selected.Name), false)
+				return a, startTunnelCmd(a.Manager, selected.ID, selected.Name)
 			}
-			a.TunnelsView.ApplyFilter()
 		}
 	case "add_tunnel":
 		var hostNames []string

@@ -79,6 +79,15 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 	sm.activeIdx = len(sm.sessions) - 1
 	sm.mu.Unlock()
 
+	// Ensure session exit is reported exactly once even if Wait and Read finish concurrently
+	var onceExit sync.Once
+	notifySessionExit := func() {
+		onceExit.Do(func() {
+			_ = sess.Close()
+			sm.handleSessionExit(sess.ID)
+		})
+	}
+
 	// Goroutine waiting for underlying process to exit
 	go func() {
 		if sess.PTY != nil {
@@ -87,8 +96,7 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 			sess.ExitCode = exitCode
 			sess.mu.Unlock()
 		}
-		_ = sess.Close()
-		sm.handleSessionExit(sess.ID)
+		notifySessionExit()
 	}()
 
 	// Goroutine reading from PTY and parsing into Virtual Terminal emulator
@@ -134,8 +142,7 @@ func (sm *SessionManager) StartSession(alias, target string, cols, rows int) (*S
 			}
 		}
 
-		_ = sess.Close()
-		sm.handleSessionExit(sess.ID)
+		notifySessionExit()
 	}()
 
 	sm.Notify()
@@ -327,7 +334,10 @@ func hasSuccessfulConnection(term vt.Terminal) bool {
 		strings.Contains(fullText, "permission denied") ||
 		strings.Contains(fullText, "kex_exchange_identification") ||
 		strings.Contains(fullText, "connection closed by remote") ||
-		strings.Contains(fullText, "connection reset by peer") {
+		strings.Contains(fullText, "connection reset by peer") ||
+		strings.Contains(fullText, "ssh:") ||
+		strings.Contains(fullText, "ssh.exe:") ||
+		strings.Contains(fullText, "fatal:") {
 		return false
 	}
 
