@@ -156,7 +156,7 @@ func buildHelpContent(width int) string {
 	add("  " + keyStyle.Render("[Enter]           ") + descStyle.Render("Подключиться во встроенном терминале (дашборд свернется вверх)"))
 	add("  " + keyStyle.Render("[O] (Shift+o)     ") + descStyle.Render("Подключиться во внешнем окне терминала"))
 	add("  " + keyStyle.Render("[m]               ") + descStyle.Render("Мини-мониторинг сервера: CPU, ОЗУ, Диск, Uptime и Load Average"))
-	add("  " + keyStyle.Render("[p] или [c]       ") + descStyle.Render("Проверить доступность (Ping) серверов параллельно"))
+	add("  " + keyStyle.Render("[p] или [c]       ") + descStyle.Render("Проверить доступность. При запуске это происходит само"))
 	add("  " + keyStyle.Render("[z]               ") + descStyle.Render("Отправить в «Отстойник» / Восстановить выбранный сервер"))
 	add("  " + keyStyle.Render("[Z]               ") + descStyle.Render("Сменить фильтр списка: [Активные] / [Отстойник] / [Все]"))
 	add("  " + keyStyle.Render("[n]               ") + descStyle.Render("Переименовать хост (задать удобный псевдоним в ~/.ssh/config)"))

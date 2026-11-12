@@ -160,10 +160,18 @@ func (a *AppModel) Init() tea.Cmd {
 	}
 	a.TunnelsView.ApplyFilter()
 
+	// Same check as [p]: active hosts only, archived hosts stay out.
+	var check tea.Cmd
+	if len(a.HostsView.Filtered) > 0 {
+		a.notify("Проверка доступности серверов...", false)
+		check = a.checkAllHostsCmd()
+	}
+
 	return tea.Batch(
 		tea.EnterAltScreen,
 		tickerCmd(),
 		a.waitForSessionActivity(),
+		check,
 	)
 }
 
