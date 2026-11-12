@@ -1,4 +1,4 @@
-﻿# SSHT Windows installer. Re-run to update. Does not touch ~/.ssh/config.
+# SSHT Windows installer. Re-run to update. Does not touch ~/.ssh/config.
 #   irm https://raw.githubusercontent.com/chuikoff/ssht/main/install/windows.ps1 | iex
 #   .\install\windows.ps1 -LocalBinary .\ssht.exe
 #   .\install\windows.ps1 -Force -Version v1.3.9
