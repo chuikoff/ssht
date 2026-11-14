@@ -13,9 +13,9 @@ import (
 type HostFilterMode int
 
 const (
-	FilterActiveOnly HostFilterMode = iota // Активные (по умолчанию)
-	FilterArchivedOnly                     // Отстойник (нерабочие серверы)
-	FilterAll                              // Все серверы
+	FilterActiveOnly   HostFilterMode = iota // Активные (по умолчанию)
+	FilterArchivedOnly                       // Отстойник (нерабочие серверы)
+	FilterAll                                // Все серверы
 )
 
 type HostsView struct {
@@ -262,10 +262,17 @@ func (v *HostsView) View(width, height int) string {
 	sb.WriteString("\n")
 
 	if len(v.Filtered) == 0 {
-		emptyMsg := "В ~/.ssh/config не найдено хостов. Нажмите [a], чтобы добавить новый хост."
-		if v.FilterMode == FilterArchivedOnly {
+		emptyMsg := "В ~/.ssh/config и known_hosts нет хостов. Нажмите [a], чтобы добавить новый хост."
+		switch {
+		case strings.TrimSpace(v.FilterInput.Value()) != "":
+			emptyMsg = "Ничего не найдено по этому фильтру."
+		case len(v.Hosts) == 0:
+			if p, err := sshconfig.GetConfigPath(); err == nil && p != "" {
+				emptyMsg = fmt.Sprintf("Хосты не найдены (%s, known_hosts). Нажмите [a], чтобы добавить.", p)
+			}
+		case v.FilterMode == FilterArchivedOnly:
 			emptyMsg = "Отстойник пуст. Нажмите [z] на нерабочем сервере, чтобы отправить его в отстойник."
-		} else if v.FilterMode == FilterActiveOnly {
+		case v.FilterMode == FilterActiveOnly:
 			emptyMsg = "Все серверы находятся в отстойнике. Нажмите [Z], чтобы переключить режим."
 		}
 		sb.WriteString("\n" + lipgloss.NewStyle().Foreground(TextMuted).PaddingLeft(2).Render(emptyMsg) + "\n")

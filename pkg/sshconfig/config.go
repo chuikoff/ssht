@@ -2,24 +2,30 @@ package sshconfig
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // HostConfig represents an SSH host entry parsed from ~/.ssh/config.
 type HostConfig struct {
-	Aliases      []string          // e.g. ["194.31.223.176", "amnezia2germany"]
-	HostName     string            // Destination host or IP
-	User         string            // SSH username
-	Port         int               // SSH port (defaults to 22)
-	IdentityFile string            // Path to private key
-	Options      map[string]string // Extra options (e.g. ServerAliveInterval, etc.)
-	RawLines     []string          // Original lines for faithful preservation
+	Aliases        []string          // e.g. ["194.31.223.176", "amnezia2germany"]
+	HostName       string            // Destination host or IP
+	User           string            // SSH username
+	Port           int               // SSH port (defaults to 22)
+	IdentityFile   string            // Path to private key
+	Options        map[string]string // Extra options (e.g. ServerAliveInterval, etc.)
+	RawLines       []string          // Original lines for faithful preservation
+	FromKnownHosts bool              `json:"-"` // Listed from known_hosts, not a Host block
 }
 
 // DisplayName returns the primary identifier for display without redundant IPs.
@@ -91,33 +97,91 @@ func (h *HostConfig) HasProxyJump() bool {
 	return false
 }
 
-// GetConfigPath returns the absolute path to ~/.ssh/config.
+// GetConfigPath returns the absolute path to the OpenSSH user config.
+// On Windows the profile can be exposed as USERPROFILE, HOME, or the
+// token profile (long name vs 8.3). The directory that already has a
+// config or known_hosts wins.
 func GetConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	homes := candidateHomes()
+	if len(homes) == 0 {
+		return "", fmt.Errorf("home directory is not defined")
 	}
-	return filepath.Join(home, ".ssh", "config"), nil
+
+	var fallback string
+	for _, home := range homes {
+		cfg := filepath.Join(home, ".ssh", "config")
+		if fallback == "" {
+			fallback = cfg
+		}
+		if st, err := os.Stat(cfg); err == nil && !st.IsDir() {
+			return cfg, nil
+		}
+	}
+	for _, home := range homes {
+		kh := filepath.Join(home, ".ssh", "known_hosts")
+		if st, err := os.Stat(kh); err == nil && !st.IsDir() {
+			return filepath.Join(home, ".ssh", "config"), nil
+		}
+	}
+	return fallback, nil
 }
 
-// LoadSSHConfig reads and parses ~/.ssh/config.
+func candidateHomes() []string {
+	var homes []string
+	seen := map[string]bool{}
+	add := func(h string) {
+		h = strings.TrimSpace(h)
+		h = strings.TrimRight(h, `\/`)
+		if h == "" {
+			return
+		}
+		key := strings.ToLower(filepath.Clean(h))
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		homes = append(homes, h)
+	}
+
+	if h, err := os.UserHomeDir(); err == nil {
+		add(h)
+	}
+	if runtime.GOOS == "windows" {
+		add(os.Getenv("USERPROFILE"))
+		add(os.Getenv("HOME"))
+		if d, p := os.Getenv("HOMEDRIVE"), os.Getenv("HOMEPATH"); d != "" && p != "" {
+			add(d + p)
+		}
+		if u, err := user.Current(); err == nil {
+			add(u.HomeDir)
+		}
+	} else {
+		add(os.Getenv("HOME"))
+	}
+	return homes
+}
+
+// LoadSSHConfig reads ~/.ssh/config (including Include) and adds servers
+// that exist only in known_hosts.
 func LoadSSHConfig() ([]*HostConfig, error) {
 	path, err := GetConfigPath()
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return []*HostConfig{}, nil
+	var hosts []*HostConfig
+	if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		hosts, err = parseConfigFile(path, 0, map[string]struct{}{})
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	file, err := os.Open(path)
+	known, err := parseKnownHosts(filepath.Join(filepath.Dir(path), "known_hosts"))
 	if err != nil {
-		return nil, err
+		return hosts, err
 	}
-	defer file.Close()
-
-	return parseConfigReader(file)
+	return mergeKnownHosts(hosts, known), nil
 }
 
 // IsWildcardAlias reports whether an alias string contains wildcard glob characters (*, ?).
@@ -139,10 +203,39 @@ func (h *HostConfig) IsWildcardHost() bool {
 }
 
 func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return parseConfigText(decodeSSHText(b), "", 0, map[string]struct{}{})
+}
+
+func parseConfigFile(path string, depth int, seen map[string]struct{}) ([]*HostConfig, error) {
+	if depth > 8 {
+		return nil, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	key := strings.ToLower(abs)
+	if _, ok := seen[key]; ok {
+		return nil, nil
+	}
+	seen[key] = struct{}{}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseConfigText(decodeSSHText(b), filepath.Dir(path), depth, seen)
+}
+
+func parseConfigText(text, baseDir string, depth int, seen map[string]struct{}) ([]*HostConfig, error) {
 	var hosts []*HostConfig
 	var current *HostConfig
 
-	scanner := bufio.NewScanner(r)
+	scanner := bufio.NewScanner(strings.NewReader(text))
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -154,31 +247,45 @@ func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 			continue
 		}
 
-		fields := strings.Fields(trimmed)
-		if len(fields) == 0 {
+		key, fields := sshKeyAndFields(trimmed)
+		if key == "" {
 			continue
 		}
 
-		key := strings.ToLower(fields[0])
-
 		if key == "match" {
-			if current != nil {
-				if !current.IsWildcardHost() {
-					hosts = append(hosts, current)
-				}
-				current = nil
+			if current != nil && !current.IsWildcardHost() {
+				hosts = append(hosts, current)
 			}
+			current = nil
+			continue
+		}
+
+		if key == "include" && baseDir != "" {
+			if current != nil && !current.IsWildcardHost() {
+				hosts = append(hosts, current)
+			}
+			current = nil
+			included, err := expandInclude(strings.Join(fields[1:], " "), baseDir, depth, seen)
+			if err != nil {
+				return nil, err
+			}
+			hosts = append(hosts, included...)
 			continue
 		}
 
 		if key == "host" {
-			if current != nil {
-				if !current.IsWildcardHost() {
-					hosts = append(hosts, current)
+			if current != nil && !current.IsWildcardHost() {
+				hosts = append(hosts, current)
+			}
+			aliases := make([]string, 0, len(fields)-1)
+			for _, a := range fields[1:] {
+				a = unquoteSSH(a)
+				if a != "" {
+					aliases = append(aliases, a)
 				}
 			}
 			current = &HostConfig{
-				Aliases:  fields[1:],
+				Aliases:  aliases,
 				Port:     22,
 				Options:  make(map[string]string),
 				RawLines: []string{line},
@@ -187,19 +294,13 @@ func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 		}
 
 		if current == nil {
-			// Directives before first Host block or inside Match block
 			continue
 		}
 
 		current.RawLines = append(current.RawLines, line)
-
 		val := ""
 		if len(fields) > 1 {
-			val = strings.Join(fields[1:], " ")
-			// Support key = val or key val
-			if fields[1] == "=" && len(fields) > 2 {
-				val = strings.Join(fields[2:], " ")
-			}
+			val = unquoteSSH(strings.Join(fields[1:], " "))
 		}
 
 		switch key {
@@ -221,12 +322,189 @@ func parseConfigReader(r io.Reader) ([]*HostConfig, error) {
 	if current != nil && !current.IsWildcardHost() {
 		hosts = append(hosts, current)
 	}
-
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-
 	return hosts, nil
+}
+
+func sshKeyAndFields(line string) (string, []string) {
+	s := strings.TrimSpace(line)
+	if s == "" {
+		return "", nil
+	}
+	i := strings.IndexAny(s, " \t=")
+	var key, rest string
+	if i < 0 {
+		key = s
+	} else {
+		key = s[:i]
+		rest = strings.TrimLeft(s[i:], " \t=")
+	}
+	fields := []string{key}
+	if rest != "" {
+		fields = append(fields, strings.Fields(rest)...)
+	}
+	return strings.ToLower(key), fields
+}
+
+func unquoteSSH(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+func expandInclude(pattern, baseDir string, depth int, seen map[string]struct{}) ([]*HostConfig, error) {
+	var hosts []*HostConfig
+	for _, part := range strings.Fields(pattern) {
+		part = expandTilde(part)
+		if !filepath.IsAbs(part) {
+			part = filepath.Join(baseDir, part)
+		}
+		matches, err := filepath.Glob(part)
+		if err != nil || len(matches) == 0 {
+			continue
+		}
+		sort.Strings(matches)
+		for _, m := range matches {
+			st, err := os.Stat(m)
+			if err != nil || st.IsDir() {
+				continue
+			}
+			included, err := parseConfigFile(m, depth+1, seen)
+			if err != nil {
+				continue
+			}
+			hosts = append(hosts, included...)
+		}
+	}
+	return hosts, nil
+}
+
+func expandTilde(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, `~\`) {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
+}
+
+func decodeSSHText(b []byte) string {
+	if bytes.HasPrefix(b, []byte{0xEF, 0xBB, 0xBF}) {
+		b = b[3:]
+	}
+	if bytes.HasPrefix(b, []byte{0xFF, 0xFE}) {
+		return decodeUTF16(b[2:], true)
+	}
+	if bytes.HasPrefix(b, []byte{0xFE, 0xFF}) {
+		return decodeUTF16(b[2:], false)
+	}
+	return string(b)
+}
+
+func decodeUTF16(b []byte, little bool) string {
+	if len(b)%2 == 1 {
+		b = b[:len(b)-1]
+	}
+	u := make([]uint16, len(b)/2)
+	for i := range u {
+		if little {
+			u[i] = uint16(b[i*2]) | uint16(b[i*2+1])<<8
+		} else {
+			u[i] = uint16(b[i*2])<<8 | uint16(b[i*2+1])
+		}
+	}
+	return string(utf16.Decode(u))
+}
+
+func parseKnownHosts(path string) ([]*HostConfig, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	var hosts []*HostConfig
+	seen := map[string]bool{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "|") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		name, port := splitKnownHost(fields[0])
+		if name == "" || strings.ContainsAny(name, "*?") {
+			continue
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		hosts = append(hosts, &HostConfig{
+			Aliases:        []string{name},
+			HostName:       name,
+			Port:           port,
+			Options:        map[string]string{},
+			FromKnownHosts: true,
+		})
+	}
+	return hosts, scanner.Err()
+}
+
+func splitKnownHost(token string) (string, int) {
+	if i := strings.IndexByte(token, ','); i >= 0 {
+		token = token[:i]
+	}
+	port := 22
+	if strings.HasPrefix(token, "[") {
+		end := strings.IndexByte(token, ']')
+		if end > 1 {
+			name := token[1:end]
+			if strings.HasPrefix(token[end:], "]:") {
+				if p, err := strconv.Atoi(token[end+2:]); err == nil && p > 0 {
+					port = p
+				}
+			}
+			return name, port
+		}
+	}
+	return token, port
+}
+
+func mergeKnownHosts(config, known []*HostConfig) []*HostConfig {
+	have := map[string]bool{}
+	for _, h := range config {
+		for _, a := range h.Aliases {
+			have[strings.ToLower(a)] = true
+		}
+		if h.HostName != "" {
+			have[strings.ToLower(h.HostName)] = true
+		}
+	}
+	for _, h := range known {
+		if have[strings.ToLower(h.HostName)] {
+			continue
+		}
+		config = append(config, h)
+	}
+	return config
 }
 
 // DangerousDirectives contains directives that could lead to arbitrary execution or unexpected inclusion.
@@ -559,4 +837,3 @@ func DeleteHost(target *HostConfig) error {
 	output := strings.Join(newLines, "\n")
 	return WriteAtomic(path, []byte(output), 0600)
 }
-

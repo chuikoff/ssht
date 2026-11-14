@@ -2,6 +2,7 @@ package sshconfig
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,56 @@ func TestDeleteHost(t *testing.T) {
 	res := strings.Join(newLines, "\n")
 	if strings.Contains(res, "ServerA") || !strings.Contains(res, "ServerB") {
 		t.Errorf("Unexpected deletion result: %s", res)
+	}
+}
+
+func TestParseEqualsIncludeAndKnownHosts(t *testing.T) {
+	dir := t.TempDir()
+	included := "Host=frominclude\n  HostName=10.1.1.1\n  User=root\n"
+	if err := os.WriteFile(filepath.Join(dir, "extra.conf"), []byte(included), 0600); err != nil {
+		t.Fatal(err)
+	}
+	main := "Include extra.conf\n\nHost=direct\nHostName=10.2.2.2\n\nHost *\n  User nope\n"
+	// UTF-8 BOM, the way some Windows editors save the file.
+	payload := append([]byte{0xEF, 0xBB, 0xBF}, []byte(main)...)
+	cfgPath := filepath.Join(dir, "config")
+	if err := os.WriteFile(cfgPath, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	known := "10.2.2.2 ssh-ed25519 AAAAC3\nhockey.example ssh-ed25519 AAAAC3\n|1|hashed| ssh-ed25519 AAAAC3\n[bracket.example]:2222 ssh-ed25519 AAAAC3\n"
+	if err := os.WriteFile(filepath.Join(dir, "known_hosts"), []byte(known), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	hosts, err := parseConfigFile(cfgPath, 0, map[string]struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 2 || hosts[0].DisplayName() != "frominclude" || hosts[1].HostName != "10.2.2.2" {
+		t.Fatalf("config parse: %+v", hosts)
+	}
+
+	extra, err := parseKnownHosts(filepath.Join(dir, "known_hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := mergeKnownHosts(hosts, extra)
+	got := map[string]bool{}
+	for _, h := range merged {
+		got[h.DisplayName()] = true
+	}
+	for _, name := range []string{"frominclude", "direct", "hockey.example", "bracket.example"} {
+		if !got[name] {
+			t.Errorf("missing %s in %#v", name, got)
+		}
+	}
+	if got["10.2.2.2"] {
+		t.Errorf("known_hosts duplicated a config HostName")
+	}
+	for _, h := range merged {
+		if h.DisplayName() == "bracket.example" && h.Port != 2222 {
+			t.Errorf("port: %+v", h)
+		}
 	}
 }
 
