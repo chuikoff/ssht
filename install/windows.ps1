@@ -151,7 +151,14 @@ if ($LocalBinary -ne "") {
         if (-not $exe) { throw "В архиве нет ssht.exe" }
         Install-Binary -Source $exe.FullName -Target $targetPath
     } finally {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        # Remove-Item dies on 8.3 TEMP (C:\Users\7636~1) and skips PATH: PowerShell/PowerShell#21070
+        try {
+            if (Test-Path -LiteralPath $tempRoot) {
+                [System.IO.Directory]::Delete($tempRoot, $true)
+            }
+        } catch {
+            Write-Warn "Не удалось удалить временный каталог: $tempRoot"
+        }
     }
 }
 
