@@ -165,6 +165,33 @@ func (s *MetadataStore) SetAllStatus(status HostStatus) {
 	}
 }
 
+// Rename moves a host's metadata onto its new primary alias.
+// The record that belonged to the host wins over a stale key on the new name,
+// so a rename cannot park the host in the other list.
+func (s *MetadataStore) Rename(oldKey, newKey string) {
+	oldKey = strings.TrimSpace(oldKey)
+	newKey = strings.TrimSpace(newKey)
+	if oldKey == "" || newKey == "" || oldKey == newKey {
+		return
+	}
+
+	s.mu.Lock()
+	if oldMeta, ok := s.Data[oldKey]; ok {
+		s.Data[newKey] = oldMeta
+		delete(s.Data, oldKey)
+	} else if meta := s.Data[newKey]; meta != nil && meta.Archived {
+		meta.Archived = false
+		meta.ArchivedAt = nil
+		meta.ArchivedReason = ""
+	} else {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+
+	_ = s.Save()
+}
+
 // IsArchived returns true if the host is in the quarantine / archive.
 func (s *MetadataStore) IsArchived(key string) bool {
 	s.mu.RLock()

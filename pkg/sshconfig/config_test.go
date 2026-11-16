@@ -119,6 +119,74 @@ func TestDeleteHost(t *testing.T) {
 	}
 }
 
+func TestRenameKeepsHostInSameList(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "Host amnezia2germany 48.102.168.161\n  HostName 48.102.168.161\n  User root\n"
+	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := GetConfigPath()
+	if err != nil || !strings.HasPrefix(path, home) {
+		t.Fatalf("config path %q is not the temp home", path)
+	}
+
+	hosts, err := LoadSSHConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("expected 1 host, got %d", len(hosts))
+	}
+	host := hosts[0]
+	old := host.PrimaryAlias()
+
+	store := NewMetadataStoreWithPath(filepath.Join(sshDir, "ssht_metadata.json"))
+	store.SetArchived("germany2", true, "stale")
+	store.SetArchived(old, false, "")
+
+	if err := UpdateHostAlias(host, "germany2"); err != nil {
+		t.Fatal(err)
+	}
+	store.Rename(old, host.PrimaryAlias())
+
+	got, err := LoadSSHConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("host disappeared, got %d", len(got))
+	}
+	h := got[0]
+	if h.PrimaryAlias() != "germany2" || h.DisplayName() != "germany2" {
+		t.Fatalf("primary = %q", h.PrimaryAlias())
+	}
+	if h.HostName != "48.102.168.161" || !containsAlias(h.Aliases, "48.102.168.161") {
+		t.Fatalf("ip dropped: aliases=%v hostname=%s", h.Aliases, h.HostName)
+	}
+	if containsAlias(h.Aliases, "amnezia2germany") {
+		t.Fatalf("old pseudonym still on the Host line: %v", h.Aliases)
+	}
+	if store.IsArchived("germany2") || store.IsArchived("amnezia2germany") {
+		t.Fatal("archive flag did not follow the visible host")
+	}
+}
+
+func containsAlias(aliases []string, want string) bool {
+	for _, a := range aliases {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseEqualsIncludeAndKnownHosts(t *testing.T) {
 	dir := t.TempDir()
 	included := "Host=frominclude\n  HostName=10.1.1.1\n  User=root\n"

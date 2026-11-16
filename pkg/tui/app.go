@@ -214,6 +214,26 @@ func (a *AppModel) notify(msg string, isError bool) {
 	a.IsErrorNotif = isError
 }
 
+func (a *AppModel) renameHost(host *sshconfig.HostConfig, newAlias string) {
+	oldAlias := host.PrimaryAlias()
+	if err := sshconfig.UpdateHostAlias(host, newAlias); err != nil {
+		a.notify(fmt.Sprintf("Ошибка переименования: %v", err), true)
+		return
+	}
+	newPrimary := host.PrimaryAlias()
+	if oldAlias != newPrimary {
+		a.MetaStore.Rename(oldAlias, newPrimary)
+		for _, t := range a.Manager.GetTunnels() {
+			if t.Host == oldAlias {
+				t.Host = newPrimary
+				_ = a.Manager.UpdateTunnel(t)
+			}
+		}
+	}
+	a.notify(fmt.Sprintf("Хост переименован в '%s'", newPrimary), false)
+	_ = a.HostsView.Reload()
+}
+
 func (a *AppModel) checkAllHostsCmd() tea.Cmd {
 	hosts := a.HostsView.Filtered
 	if len(hosts) == 0 {
@@ -853,19 +873,7 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			newAlias, closed := a.RenameModal.HandleMouse(msg, a.Width, a.Height)
 			if closed {
 				if newAlias != "" {
-					oldAlias := a.RenameModal.Host.PrimaryAlias()
-					if err := sshconfig.UpdateHostAlias(a.RenameModal.Host, newAlias); err != nil {
-						a.notify(fmt.Sprintf("Ошибка переименования: %v", err), true)
-					} else {
-						a.notify(fmt.Sprintf("Хост переименован в '%s'", newAlias), false)
-						for _, t := range a.Manager.GetTunnels() {
-							if t.Host == oldAlias {
-								t.Host = newAlias
-								_ = a.Manager.UpdateTunnel(t)
-							}
-						}
-						_ = a.HostsView.Reload()
-					}
+					a.renameHost(a.RenameModal.Host, newAlias)
 				}
 				a.ActiveModal = ModalNone
 				a.RenameModal = nil
@@ -1507,19 +1515,7 @@ func (a *AppModel) handleModalKey(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newAlias, closed, cmd := a.RenameModal.Update(msg)
 		if closed {
 			if newAlias != "" {
-				oldAlias := a.RenameModal.Host.PrimaryAlias()
-				if err := sshconfig.UpdateHostAlias(a.RenameModal.Host, newAlias); err != nil {
-					a.notify(fmt.Sprintf("Ошибка переименования: %v", err), true)
-				} else {
-					a.notify(fmt.Sprintf("Хост переименован в '%s'", newAlias), false)
-					for _, t := range a.Manager.GetTunnels() {
-						if t.Host == oldAlias {
-							t.Host = newAlias
-							_ = a.Manager.UpdateTunnel(t)
-						}
-					}
-					_ = a.HostsView.Reload()
-				}
+				a.renameHost(a.RenameModal.Host, newAlias)
 			}
 			a.ActiveModal = ModalNone
 			a.RenameModal = nil

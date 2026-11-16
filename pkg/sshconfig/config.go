@@ -721,12 +721,28 @@ func UpdateHostAlias(target *HostConfig, newAlias string) error {
 	for _, line := range lines {
 		if !matched && targetMatch(line) {
 			matched = true
+			// Drop only the old pseudonym. IP tokens stay on the Host line,
+			// otherwise `ssh user@ip` misses this block and the row vanishes into known_hosts.
 			var newAliases []string
-			newAliases = append(newAliases, newAlias)
-			for _, a := range target.Aliases {
-				if a != newAlias && !isIP(a) {
-					newAliases = append(newAliases, a)
+			seen := map[string]bool{}
+			add := func(a string) {
+				if a == "" || seen[a] {
+					return
 				}
+				seen[a] = true
+				newAliases = append(newAliases, a)
+			}
+			replaced := false
+			for _, a := range target.Aliases {
+				if !replaced && !isIP(a) {
+					add(newAlias)
+					replaced = true
+					continue
+				}
+				add(a)
+			}
+			if !replaced && !seen[newAlias] {
+				newAliases = append([]string{newAlias}, newAliases...)
 			}
 
 			// Preserve leading indentation if any
