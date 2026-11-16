@@ -37,6 +37,13 @@ var (
 				Padding(0, 1).
 				MarginLeft(1)
 
+	UpdateBadge = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#000000")).
+			Background(WarningColor).
+			Padding(0, 1).
+			MarginLeft(1)
+
 	// Tab Styles
 	TabActiveStyle = lipgloss.NewStyle().
 			Bold(true).

@@ -66,6 +66,7 @@ func startTunnelCmd(mgr *tunnel.Manager, id, name string) tea.Cmd {
 		return tunnelStartResultMsg{id: id, name: name, err: err}
 	}
 }
+
 type monitorMetricsMsg struct {
 	Metrics *monitoring.ServerMetrics
 	Err     error
@@ -79,6 +80,7 @@ type hostCheckResultMsg struct {
 }
 
 type allHostsCheckedMsg struct{}
+type updateAvailableMsg struct{ Latest string }
 
 type FooterBtn struct {
 	Key    string
@@ -103,10 +105,10 @@ type AppModel struct {
 	Selection        session.SelectionRange
 
 	// Modal State
-	ActiveModal ModalType
-	TunnelModal *TunnelModal
-	HostModal   *HostModal
-	RenameModal *RenameModal
+	ActiveModal  ModalType
+	TunnelModal  *TunnelModal
+	HostModal    *HostModal
+	RenameModal  *RenameModal
 	LogModal     *LogModal
 	ExportModal  *ExportModal
 	ImportModal  *ImportModal
@@ -121,6 +123,7 @@ type AppModel struct {
 	// Notification & Status
 	Notification string
 	IsErrorNotif bool
+	UpdateLatest string // set when GitHub has a newer release; kept in the header
 
 	Width    int
 	Height   int
@@ -172,7 +175,18 @@ func (a *AppModel) Init() tea.Cmd {
 		tickerCmd(),
 		a.waitForSessionActivity(),
 		check,
+		checkUpdateCmd(),
 	)
+}
+
+func checkUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		latest, err := version.LatestRelease()
+		if err != nil || !version.IsNewer(latest, version.Current) {
+			return nil
+		}
+		return updateAvailableMsg{Latest: latest}
+	}
 }
 
 func (a *AppModel) waitForSessionActivity() tea.Cmd {
@@ -341,7 +355,14 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case allHostsCheckedMsg:
-		a.notify("Проверка доступности хостов завершена", false)
+		if a.UpdateLatest == "" {
+			a.notify("Проверка доступности хостов завершена", false)
+		}
+		return a, nil
+
+	case updateAvailableMsg:
+		a.UpdateLatest = msg.Latest
+		a.notify(fmt.Sprintf("Доступна новая версия v%s — запустите установщик ещё раз", msg.Latest), false)
 		return a, nil
 
 	case sshExitedMsg:
@@ -1664,6 +1685,12 @@ func (a *AppModel) View() string {
 	headerSb.WriteString("   ")
 	curX += utf8.RuneCountInString(badgeText) + 2 + 3
 
+	if a.UpdateLatest != "" {
+		upd := "↑ v" + a.UpdateLatest
+		headerSb.WriteString(UpdateBadge.Render(upd))
+		curX += utf8.RuneCountInString(upd) + 3
+	}
+
 	a.TabZones = []ButtonZone{}
 
 	tab1Title := "1. SSH Подключения"
@@ -1880,6 +1907,11 @@ func (a *AppModel) renderCollapsedHeader(width int) (string, []ButtonZone) {
 	appTitle := fmt.Sprintf("▲ SSHT v%s", version.Current)
 	appPart := AppTitleStyle.Render(appTitle)
 	plainLeft := appTitle + " "
+	if a.UpdateLatest != "" {
+		upd := "↑ v" + a.UpdateLatest
+		appPart += UpdateBadge.Render(upd)
+		plainLeft += upd + "   "
+	}
 
 	var hostPart string
 	active := a.SessionMgr.GetActive()
