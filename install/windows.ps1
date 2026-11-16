@@ -14,6 +14,18 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $null = cmd /c "chcp 65001 >nul"
 
+# The click updater starts Windows PowerShell 5.1 with PowerShell 7's module
+# path, so Get-FileHash is hidden and the window used to close on that error.
+$script:InstallFailed = $false
+trap {
+    if ($script:InstallFailed) { exit 1 }
+    $script:InstallFailed = $true
+    Write-Host ""
+    Write-Host "Ошибка установки: $_" -ForegroundColor Red
+    Read-Host "Enter — закрыть"
+    exit 1
+}
+
 $Repo = "chuikoff/ssht"
 
 function Write-Info([string]$Message) { Write-Host $Message -ForegroundColor Green }
@@ -142,7 +154,14 @@ if ($LocalBinary -ne "") {
         $sumLine = Get-Content -LiteralPath $sumPath | Where-Object { $_ -like "*$fileName" } | Select-Object -First 1
         if (-not $sumLine) { throw "В checksums.txt нет записи для $fileName" }
         $expected = ($sumLine -split '\s+', 2)[0].ToLowerInvariant()
-        $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $stream = [System.IO.File]::OpenRead($zipPath)
+        try {
+            $actual = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $stream.Dispose()
+            $sha.Dispose()
+        }
         if ($actual -ne $expected) { throw "SHA256 не совпала для $fileName" }
 
         $extract = Join-Path $tempRoot "extract"
