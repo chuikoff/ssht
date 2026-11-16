@@ -121,9 +121,12 @@ type AppModel struct {
 	LastClick   LastClickState
 
 	// Notification & Status
-	Notification string
-	IsErrorNotif bool
-	UpdateLatest string // set when GitHub has a newer release; kept in the header
+	Notification                     string
+	IsErrorNotif                     bool
+	UpdateLatest                     string // set when GitHub has a newer release; kept in the header
+	updateClick                      bool   // the notification text is the update notice
+	updateBadgeStart, updateBadgeEnd int
+	updateNoteStart, updateNoteLen   int
 
 	Width    int
 	Height   int
@@ -212,6 +215,22 @@ func tickerCmd() tea.Cmd {
 func (a *AppModel) notify(msg string, isError bool) {
 	a.Notification = msg
 	a.IsErrorNotif = isError
+	a.updateClick = false
+}
+
+func (a *AppModel) beginUpdate() (tea.Model, tea.Cmd) {
+	if err := launchUpdate(); err != nil {
+		a.notify(fmt.Sprintf("Не удалось запустить обновление: %v", err), true)
+		return a, nil
+	}
+	return a, tea.Quit
+}
+
+func (a *AppModel) hitUpdate(x, y int) bool {
+	if a.UpdateLatest == "" {
+		return false
+	}
+	return updateHit(x, y, a.Width, a.updateBadgeStart, a.updateBadgeEnd, a.updateNoteStart, a.updateNoteLen)
 }
 
 func (a *AppModel) renameHost(host *sshconfig.HostConfig, newAlias string) {
@@ -382,7 +401,8 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateAvailableMsg:
 		a.UpdateLatest = msg.Latest
-		a.notify(fmt.Sprintf("Доступна новая версия v%s — запустите установщик ещё раз", msg.Latest), false)
+		a.notify(fmt.Sprintf("Доступна новая версия v%s — нажмите, чтобы обновить", msg.Latest), false)
+		a.updateClick = true
 		return a, nil
 
 	case sshExitedMsg:
@@ -668,6 +688,9 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// Click on collapsed top bar (Y == 0)
 		if msg.Y == 0 {
 			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+				if a.hitUpdate(msg.X, msg.Y) {
+					return a.beginUpdate()
+				}
 				for _, z := range a.TerminalTopZones {
 					if z.Action == "close_active" && msg.X >= z.StartX && msg.X <= z.EndX {
 						return a.executeFooterAction("close_active")
@@ -962,6 +985,10 @@ func (a *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, nil
+	}
+
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && a.hitUpdate(msg.X, msg.Y) {
+		return a.beginUpdate()
 	}
 
 	// 2. Click on Header Tabs (Y == 0)
@@ -1663,6 +1690,8 @@ func (a *AppModel) View() string {
 	}
 
 	// 1. Header (Title + Version + Active Tunnels Counter + Clickable Tabs)
+	a.updateBadgeStart, a.updateBadgeEnd = 0, 0
+	a.updateNoteStart, a.updateNoteLen = -1, 0
 	var headerSb strings.Builder
 	titleText := fmt.Sprintf("SSHT v%s", version.Current)
 	headerSb.WriteString(AppTitleStyle.Render(titleText))
@@ -1683,6 +1712,8 @@ func (a *AppModel) View() string {
 
 	if a.UpdateLatest != "" {
 		upd := "↑ v" + a.UpdateLatest
+		a.updateBadgeStart = curX
+		a.updateBadgeEnd = curX + utf8.RuneCountInString(upd) + 3
 		headerSb.WriteString(UpdateBadge.Render(upd))
 		curX += utf8.RuneCountInString(upd) + 3
 	}
@@ -1731,12 +1762,18 @@ func (a *AppModel) View() string {
 		Action: "tab_help",
 	})
 	headerSb.WriteString(tab3Style.Render(tab3Title))
+	curX += tab3Width
 
 	if a.Notification != "" {
+		note := "  ✔ " + a.Notification
+		if a.updateClick {
+			a.updateNoteStart = curX
+			a.updateNoteLen = 1 + utf8.RuneCountInString(note)
+		}
 		if a.IsErrorNotif {
 			headerSb.WriteString(ErrorNotificationStyle.Render("  " + a.Notification))
 		} else {
-			headerSb.WriteString(NotificationStyle.Render("  ✔ " + a.Notification))
+			headerSb.WriteString(NotificationStyle.Render(note))
 		}
 	}
 
@@ -1903,8 +1940,12 @@ func (a *AppModel) renderCollapsedHeader(width int) (string, []ButtonZone) {
 	appTitle := fmt.Sprintf("▲ SSHT v%s", version.Current)
 	appPart := AppTitleStyle.Render(appTitle)
 	plainLeft := appTitle + " "
+	a.updateBadgeStart, a.updateBadgeEnd = 0, 0
+	a.updateNoteStart, a.updateNoteLen = -1, 0
 	if a.UpdateLatest != "" {
 		upd := "↑ v" + a.UpdateLatest
+		a.updateBadgeStart = utf8.RuneCountInString(appTitle) + 3
+		a.updateBadgeEnd = a.updateBadgeStart + utf8.RuneCountInString(upd) + 2
 		appPart += UpdateBadge.Render(upd)
 		plainLeft += upd + "   "
 	}
