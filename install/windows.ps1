@@ -46,24 +46,28 @@ function Install-Binary([string]$Source, [string]$Target) {
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
-    if (Test-Path $Target) {
-        $old = "$Target.old"
-        Remove-Item $old -Force -ErrorAction SilentlyContinue
+    $leaf = Split-Path -Leaf $Target
+    if (Test-Path -LiteralPath $Target) {
+        # A fixed ssht.exe.old stays locked by the previous process and the next rename fails.
+        $oldLeaf = "{0}.{1}.old" -f $leaf, [guid]::NewGuid().ToString("n")
+        $old = Join-Path $dir $oldLeaf
         try {
-            Rename-Item -Path $Target -NewName (Split-Path -Leaf $old) -ErrorAction Stop
+            Rename-Item -LiteralPath $Target -NewName $oldLeaf -ErrorAction Stop
         } catch {
-            throw "Не удалось заменить $Target. Закройте SSHT, иконку в трее и 'ssht daemon', затем запустите установщик снова."
+            throw "Не удалось заменить $Target ($($_.Exception.Message)). Закройте SSHT, иконку в трее и 'ssht daemon', затем запустите установщик снова."
         }
         try {
-            Copy-Item -Path $Source -Destination $Target -Force
+            Copy-Item -LiteralPath $Source -Destination $Target -Force
         } catch {
-            Rename-Item -Path $old -NewName (Split-Path -Leaf $Target) -ErrorAction SilentlyContinue
+            Rename-Item -LiteralPath $old -NewName $leaf -ErrorAction SilentlyContinue
             throw
         }
-        Remove-Item $old -Force -ErrorAction SilentlyContinue
-        return
+    } else {
+        Copy-Item -LiteralPath $Source -Destination $Target -Force
     }
-    Copy-Item -Path $Source -Destination $Target -Force
+    Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "$leaf.*.old" -or $_.Name -eq "$leaf.old" -or $_.Name -eq "$leaf.prev" } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 
 function Add-ToUserPath([string]$Dir) {
